@@ -5,8 +5,6 @@ import connectDB from './utils/db.js';
 import dotenv from 'dotenv';
 import bodyParser from 'body-parser';
 import RequestRoutes from './routes/requests.js';
-// NEW: Import mongoose to check DB connection status for health check
-import mongoose from 'mongoose';
 
 dotenv.config();
 connectDB();
@@ -22,26 +20,8 @@ app.get('/', (req, res) => {
     res.send('Express server is running!');
 });
 
-// ✅ REFINED HEALTH CHECK: Added database status check
 app.get('/health', (req, res) => {
-    const isDbConnected = mongoose.connection.readyState === 1; // 1 means connected
-    
-    // If the database is connected, return a 200 OK status
-    if (isDbConnected) {
-        return res.status(200).json({ 
-            status: "ok", 
-            uptime: process.uptime(),
-            db: "connected",
-            message: "Service and database are running smoothly."
-        });
-    } else {
-        // If the database is not connected, return a 503 Service Unavailable status
-        return res.status(503).json({ 
-            status: "error", 
-            db: "disconnected",
-            message: "Service is running but database connection failed."
-        });
-    }
+    res.status(200).json({ status: "ok", uptime: process.uptime() });
 });
 
 app.use('/api/auth', AuthRoutes);

@@ -1,11 +1,25 @@
+// cashflow/cashflow-backend/firebaseAdmin.js
+
 import admin from 'firebase-admin';
-import fs from 'fs'; // 📍 NEW: Import the file system module 📍
+// import fs from 'fs'; // 📍 REMOVED: No longer reading file system 📍
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 const initializeFirebaseAdmin = () => {
     if (!admin.apps.length) {
         try {
-            // 📍 NEW: Read the service account file synchronously and parse it 📍
-            const serviceAccount = JSON.parse(fs.readFileSync('./serviceAccountKey.json', 'utf8'));
+            // ⭐ --- MODIFIED: Load credentials from environment variable --- ⭐
+            const keyJson = process.env.FIREBASE_KEY_JSON;
+            
+            if (!keyJson) {
+                console.error("FIREBASE_KEY_JSON environment variable is missing.");
+                process.exit(1);
+            }
+            
+            // The JSON must be parsed from the environment variable string
+            const serviceAccount = JSON.parse(keyJson);
+
             admin.initializeApp({
                 credential: admin.credential.cert(serviceAccount),
             });
