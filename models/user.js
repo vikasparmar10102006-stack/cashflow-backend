@@ -42,6 +42,10 @@ const userSchema = new mongoose.Schema({
   notificationPermission: { type: String, default: 'denied' },
   locationPermission: { type: String, default: 'denied' },
   locationHistory: [locationSchema],
+
+  // ✅ FIX: Define the new currentLocation field using the locationSchema
+  currentLocation: { type: locationSchema, default: null },
+
   incomingRequests: [requestSchema],
   sentRequests: [requestSchema],
   pushNotificationToken: { type: String },

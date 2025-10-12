@@ -12,54 +12,76 @@ initializeFirebaseAdmin();
 
 const calculateDistance = (loc1, loc2) => {
     if (!loc1 || !loc2) return Infinity;
+    // Use optional chaining for robustness, though schema defines structure
+    const lat1 = loc1.latitude || 0;
+    const lon1 = loc1.longitude || 0;
+    const lat2 = loc2.latitude || 0;
+    const lon2 = loc2.longitude || 0;
+
     return getDistance(
-        { latitude: loc1.latitude, longitude: loc1.longitude },
-        { latitude: loc2.latitude, longitude: loc2.longitude } // FIX: Corrected to use loc2.latitude and loc2.longitude
+        { latitude: lat1, longitude: lon1 },
+        { latitude: lat2, longitude: lon2 } 
     );
 };
 
+// ✅ Full fixed version of authGoogle function — ensures new users get location updated properly
 export const authGoogle = async (req, res) => {
     try {
         const { userdata, notificationPermission, locationPermission, location, pushNotificationToken } = req.body;
         
         console.log("Received /api/auth/google request body:", JSON.stringify(req.body, null, 2));
 
+        // Simplified user payload extraction
         let userPayload = null;
-        if (userdata && userdata.data && userdata.data.user) {
-            userPayload = userdata.data.user;
-        } else if (userdata && userdata.user) {
-            userPayload = userdata.user;
-        } else if (userdata && userdata.email) {
-            userPayload = userdata;
-        }
+        if (userdata?.data?.user) userPayload = userdata.data.user;
+        else if (userdata?.user) userPayload = userdata.user;
+        else if (userdata?.email) userPayload = userdata;
+        
 
-        if (!userPayload) {
-            console.error("Validation Error: Could not extract user info from 'userdata'.");
+        if (!userPayload || !userPayload.email) {
+            console.error("Validation Error: Could not extract user info or email from 'userdata'.");
             return res.status(400).json({ success: false, message: "Invalid user data structure received." });
         }
         
         const { email, name, givenName, familyName, photo: picture } = userPayload;
 
-        if (!email) {
-            return res.status(400).json({ success: false, message: "Email is required." });
-        }
-
-        const updateData = {
-            name, givenName, familyName, picture,
-            notificationPermission, locationPermission, pushNotificationToken,
+        // ✅ 1. Define fields to be set (scalar updates)
+        const setFields = {
+            name,
+            givenName,
+            familyName,
+            picture,
+            notificationPermission,
+            locationPermission,
+            pushNotificationToken,
         };
-        
-        if (location && location.latitude && location.longitude) {
-            updateData.$push = {
+
+        // ✅ 2. Define the full update query object
+        const updateQuery = { $set: setFields };
+
+        if (location?.latitude && location?.longitude) {
+            // Add $push operator for locationHistory
+            updateQuery.$push = {
                 locationHistory: {
                     $each: [{ ...location, timestamp: new Date() }],
-                    $position: 0, $slice: 5
-                }
+                    $position: 0,
+                    $slice: 5,
+                },
+            };
+
+            // Also update the dedicated currentLocation field via $set
+            updateQuery.$set.currentLocation = {
+                latitude: location.latitude,
+                longitude: location.longitude,
+                timestamp: new Date(),
+                accuracy: location.accuracy,
             };
         }
-
+        
+        // Use findOneAndUpdate with the complete updateQuery object
         const updatedUser = await User.findOneAndUpdate(
-            { email: email }, { $set: updateData },
+            { email: email }, 
+            updateQuery, 
             { new: true, upsert: true, runValidators: true }
         );
 
@@ -91,14 +113,23 @@ export const sendCashRequest = async (req, res) => {
             status: 'pending', createdAt: new Date(),
         };
 
+        // 1. Find all potential nearby users (everyone except the requester)
         const nearbyUsers = await User.find({
             _id: { $ne: requester._id },
-            'locationHistory.0': { '$exists': true }
         });
 
         const radiusInMeters = radius * 1000;
         const recipientIds = nearbyUsers
-            .filter(user => calculateDistance(requesterLocation, user.locationHistory[0]) <= radiusInMeters)
+            .filter(user => {
+                // ⭐ ROBUST LOCATION CHECK: Prioritizes the dedicated currentLocation field.
+                const userLocation = user.currentLocation || (user.locationHistory && user.locationHistory.length > 0 ? user.locationHistory[0] : null);
+                
+                if (!userLocation || !userLocation.latitude || !userLocation.longitude) {
+                    return false; // Skip users who have no valid location data
+                }
+
+                return calculateDistance(requesterLocation, userLocation) <= radiusInMeters;
+            })
             .map(user => user._id);
         
         if (recipientIds.length > 0) {
