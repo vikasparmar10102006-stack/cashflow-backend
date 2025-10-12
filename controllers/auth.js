@@ -42,7 +42,35 @@ const sendFCMNotification = async (tokens, data, notification) => {
     }
 };
 
-// ✅ NEW: Keep Alive Controller Function
+// ✅ NEW FUNCTION: Clears the push notification token from the user profile on sign out.
+export const clearPushNotificationToken = async (req, res) => {
+    try {
+        const { email } = req.body;
+        if (!email) {
+            return res.status(400).json({ success: false, message: "Email is required." });
+        }
+
+        const user = await User.findOneAndUpdate(
+            { email },
+            { $unset: { pushNotificationToken: 1 } }, // Remove the field entirely
+            { new: true }
+        );
+
+        if (!user) {
+            return res.status(404).json({ success: false, message: "User not found." });
+        }
+
+        console.log(`FCM Token cleared for user: ${email}`);
+        return res.status(200).json({ success: true, message: "Token cleared." });
+
+    } catch (error) {
+        console.error('Error in clearPushNotificationToken:', error);
+        return res.status(500).json({ success: false, message: "Internal server error." });
+    }
+};
+
+
+// Keep Alive Controller Function
 export const keepAlive = async (req, res) => {
     try {
         // Perform a very fast, lightweight query to keep the database connection warm.

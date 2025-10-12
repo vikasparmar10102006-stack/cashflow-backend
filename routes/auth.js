@@ -4,6 +4,7 @@ import { authGoogle, clearPushNotificationToken } from '../controllers/auth.js'
 const router = Router();
 
 router.post("/google", authGoogle);
-router.post("/clear-token", clearPushNotificationToken); // <-- NEW ROUTE ADDED
+// ✅ NEW: Route for clearing the push notification token on sign out
+router.post("/clear-token", clearPushNotificationToken);
 
 export default router;
