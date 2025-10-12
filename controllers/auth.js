@@ -42,7 +42,21 @@ const sendFCMNotification = async (tokens, data, notification) => {
     }
 };
 
-// ✅ Full fixed version of authGoogle function — ensures new users get location updated properly
+// ✅ NEW: Keep Alive Controller Function
+export const keepAlive = async (req, res) => {
+    try {
+        // Perform a very fast, lightweight query to keep the database connection warm.
+        await User.findOne({}).limit(1).exec(); 
+        console.log('Keep-Alive check successful. Server and DB connection are warm.');
+        return res.status(200).json({ success: true, message: "Server is awake and connection is warm." });
+    } catch (error) {
+        console.error('Error in keepAlive/health-check:', error);
+        // Respond with success even if the DB check fails, to keep the keep-alive service running.
+        return res.status(200).json({ success: true, message: "Server is awake, but DB check failed." });
+    }
+};
+
+// Full fixed version of authGoogle function — ensures new users get location updated properly
 export const authGoogle = async (req, res) => {
     try {
         const { userdata, notificationPermission, locationPermission, location, pushNotificationToken } = req.body;
@@ -63,7 +77,7 @@ export const authGoogle = async (req, res) => {
         
         const { email, name, givenName, familyName, photo: picture } = userPayload;
 
-        // ✅ 1. Define fields to be set (scalar updates)
+        // 1. Define fields to be set (scalar updates)
         const setFields = {
             name,
             givenName,
@@ -75,7 +89,7 @@ export const authGoogle = async (req, res) => {
             ...(pushNotificationToken && { pushNotificationToken }), 
         };
 
-        // ✅ 2. Define the full update query object
+        // 2. Define the full update query object
         const updateQuery = { $set: setFields };
 
         if (location?.latitude && location?.longitude) {
@@ -191,7 +205,7 @@ export const sendCashRequest = async (req, res) => {
     }
 };
 
-// ✅ --- REWRITTEN LOGIC FOR `updateRequestStatus` --- ✅
+// --- REWRITTEN LOGIC FOR `updateRequestStatus` ---
 export const updateRequestStatus = async (req, res) => {
     try {
         const { userEmail, requestId, newStatus } = req.body;
@@ -321,7 +335,7 @@ export const getPendingRequestsCount = async (req, res) => {
     }
 };
 
-// ✅ --- MODIFIED `sendMessage` to include push notification to the chat partner --- ✅
+// --- MODIFIED `sendMessage` to include push notification to the chat partner ---
 export const sendMessage = async (req, res) => {
     try {
         const { chatId, senderId, text } = req.body;
