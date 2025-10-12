@@ -5,7 +5,7 @@ import connectDB from './utils/db.js';
 import dotenv from 'dotenv';
 import bodyParser from 'body-parser';
 import RequestRoutes from './routes/requests.js';
-import { keepAlive } from './controllers/auth.js'; // Import the new controller
+import CallRoutes from './routes/call.js'; // ⭐ IMPORT NEW CALL ROUTES
 
 dotenv.config();
 connectDB();
@@ -25,11 +25,9 @@ app.get('/health', (req, res) => {
     res.status(200).json({ status: "ok", uptime: process.uptime() });
 });
 
-// ✅ NEW: Endpoint to hit for keeping the server warm and the DB connection alive
-app.get('/health-check', keepAlive);
-
 app.use('/api/auth', AuthRoutes);
 app.use('/api/requests', RequestRoutes);
+app.use('/api/calls', CallRoutes); // ⭐ REGISTER NEW CALL ROUTES
 
 app.listen(process.env.PORT, () => {
     console.log(`Server is running on port ${process.env.PORT}`);
