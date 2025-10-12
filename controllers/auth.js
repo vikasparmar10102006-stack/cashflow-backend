@@ -24,6 +24,24 @@ const calculateDistance = (loc1, loc2) => {
     );
 };
 
+// Function to send FCM notification to a list of tokens
+const sendFCMNotification = async (tokens, data, notification) => {
+    if (!tokens || tokens.length === 0) return;
+    
+    // Filter out null/undefined tokens
+    const validTokens = tokens.filter(token => !!token);
+
+    if (validTokens.length === 0) return;
+
+    try {
+        const response = await admin.messaging().sendEachForMulticast({ tokens: validTokens, data, notification });
+        console.log('Successfully sent multicast FCM message:', response.successCount, 'successes,', response.failureCount, 'failures');
+        return response;
+    } catch (error) {
+        console.error('Error sending multicast FCM message:', error);
+    }
+};
+
 // ✅ Full fixed version of authGoogle function — ensures new users get location updated properly
 export const authGoogle = async (req, res) => {
     try {
@@ -53,7 +71,8 @@ export const authGoogle = async (req, res) => {
             picture,
             notificationPermission,
             locationPermission,
-            pushNotificationToken,
+            // Only update pushToken if it is provided
+            ...(pushNotificationToken && { pushNotificationToken }), 
         };
 
         // ✅ 2. Define the full update query object
@@ -116,27 +135,49 @@ export const sendCashRequest = async (req, res) => {
         // 1. Find all potential nearby users (everyone except the requester)
         const nearbyUsers = await User.find({
             _id: { $ne: requester._id },
+            // Only consider users who have location enabled and a token
+            locationPermission: 'granted',
+            pushNotificationToken: { $exists: true, $ne: null } 
         });
 
         const radiusInMeters = radius * 1000;
-        const recipientIds = nearbyUsers
-            .filter(user => {
-                // ⭐ ROBUST LOCATION CHECK: Prioritizes the dedicated currentLocation field.
-                const userLocation = user.currentLocation || (user.locationHistory && user.locationHistory.length > 0 ? user.locationHistory[0] : null);
-                
-                if (!userLocation || !userLocation.latitude || !userLocation.longitude) {
-                    return false; // Skip users who have no valid location data
-                }
+        
+        const recipients = nearbyUsers.filter(user => {
+            // ⭐ ROBUST LOCATION CHECK: Prioritizes the dedicated currentLocation field.
+            const userLocation = user.currentLocation || (user.locationHistory && user.locationHistory.length > 0 ? user.locationHistory[0] : null);
+            
+            if (!userLocation || !userLocation.latitude || !userLocation.longitude) {
+                return false; // Skip users who have no valid location data
+            }
 
-                return calculateDistance(requesterLocation, userLocation) <= radiusInMeters;
-            })
-            .map(user => user._id);
+            return calculateDistance(requesterLocation, userLocation) <= radiusInMeters;
+        });
+        
+        const recipientIds = recipients.map(user => user._id);
         
         if (recipientIds.length > 0) {
+            // Update the incoming requests list for all recipients
             await User.updateMany(
                 { _id: { $in: recipientIds } },
                 { $push: { incomingRequests: { $each: [newRequest], $position: 0 } } }
             );
+
+            // 2. Send push notifications to all recipients
+            const tokens = recipients.map(user => user.pushNotificationToken);
+            const data = {
+                type: 'NEW_REQUEST',
+                requestId: newRequest._id.toString(),
+                requestType: newRequest.type,
+                amount: newRequest.amount.toString(),
+                requesterId: requester._id.toString(),
+                requesterName: requester.name,
+            };
+            const notification = {
+                title: `New ${newRequest.type} Request Near You!`,
+                body: `${requester.name} needs ₹${newRequest.amount}. Tip offered: ₹${newRequest.tip}. Tap to respond.`,
+            };
+            
+            await sendFCMNotification(tokens, data, notification);
         }
 
         await User.findByIdAndUpdate(requester._id, {
@@ -155,8 +196,6 @@ export const updateRequestStatus = async (req, res) => {
     try {
         const { userEmail, requestId, newStatus } = req.body;
         if (newStatus !== 'accepted') {
-            // For now, we only handle the 'accepted' status for this new logic.
-            // Declining a request can be handled by simply removing it from the user's incoming list if needed.
             return res.status(400).json({ success: false, message: "Only 'accepted' status is handled." });
         }
 
@@ -209,6 +248,10 @@ export const updateRequestStatus = async (req, res) => {
                     title: 'New Offer!',
                     body: `${acceptor.name} has accepted your request for ₹${requestInAcceptor.amount}.`
                 },
+                notification: {
+                    title: 'New Offer Received',
+                    body: `${acceptor.name} has offered to fulfill your request for ₹${requestInAcceptor.amount}. Tap to view offers.`,
+                },
             };
             await admin.messaging().send(message);
             console.log('Successfully sent new acceptor notification to:', requester.email);
@@ -222,7 +265,8 @@ export const updateRequestStatus = async (req, res) => {
     }
 };
 
-// ✅ --- NEW CONTROLLER FUNCTION `getRequestAcceptors` --- ✅
+// --- Other functions (getNotifications, getSentRequests, etc.) remain the same ---
+
 export const getRequestAcceptors = async (req, res) => {
     try {
         const { userEmail, requestId } = req.query;
@@ -239,8 +283,6 @@ export const getRequestAcceptors = async (req, res) => {
         return res.status(500).json({ success: false, message: "Internal server error" });
     }
 };
-
-// --- Other functions (getNotifications, getSentRequests, etc.) remain the same ---
 
 export const getNotifications = async (req, res) => {
     try {
@@ -279,17 +321,48 @@ export const getPendingRequestsCount = async (req, res) => {
     }
 };
 
+// ✅ --- MODIFIED `sendMessage` to include push notification to the chat partner --- ✅
 export const sendMessage = async (req, res) => {
     try {
         const { chatId, senderId, text } = req.body;
         if (!mongoose.Types.ObjectId.isValid(chatId) || !mongoose.Types.ObjectId.isValid(senderId)) {
             return res.status(400).json({ success: false, message: "Invalid chat or sender ID." });
         }
+        
         const chat = await Chat.findById(chatId);
         if (!chat) return res.status(404).json({ success: false, message: "Chat not found." });
 
         chat.messages.push({ senderId, text });
         await chat.save();
+        
+        // 1. Identify the recipient
+        const recipientId = chat.participants.find(p => p.toString() !== senderId);
+        
+        // 2. Fetch sender's name and recipient's token
+        const [sender, recipient] = await Promise.all([
+            User.findById(senderId).select('name'),
+            User.findById(recipientId).select('pushNotificationToken notificationPermission')
+        ]);
+
+        // 3. Send notification if token is available and user allows it
+        if (recipient && recipient.pushNotificationToken && recipient.notificationPermission === 'granted') {
+            const message = {
+                token: recipient.pushNotificationToken,
+                data: {
+                    type: 'NEW_CHAT_MESSAGE',
+                    chatId: chatId.toString(),
+                    senderId: senderId,
+                    senderName: sender.name,
+                },
+                notification: {
+                    title: `New Message from ${sender.name}`,
+                    body: text.length > 50 ? text.substring(0, 50) + '...' : text,
+                },
+            };
+            await admin.messaging().send(message);
+            console.log('Successfully sent chat notification to:', recipientId.toString());
+        }
+
         return res.status(200).json({ success: true, message: "Message sent." });
     } catch (error) {
         console.error('Error in sendMessage:', error);
