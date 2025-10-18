@@ -9,6 +9,8 @@ import {
   getMessages,
   sendOnlineRequest,
   getRequestAcceptors,
+  // 🟢 CHANGE: Import the new controller function
+  completeRequest,
 } from '../controllers/auth.js';
 
 // ✅ FIX: Import the shop controller functions
@@ -19,6 +21,8 @@ const router = Router();
 // Request routes
 router.post('/request-cash', sendCashRequest);
 router.post('/update-request-status', updateRequestStatus);
+// 🟢 CHANGE: Add the new route for completing a request
+router.post('/complete-request', completeRequest);
 router.get('/notifications', getNotifications);
 router.get('/sent-requests', getSentRequests);
 router.get('/pending-count', getPendingRequestsCount);
@@ -37,4 +41,3 @@ router.get('/chat-messages', getMessages);
 router.post('/request-online', sendOnlineRequest);
 
 export default router;
-  

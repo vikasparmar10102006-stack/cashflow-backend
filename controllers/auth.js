@@ -288,14 +288,27 @@ export const sendMessage = async (req, res) => {
         const chat = await Chat.findById(chatId);
         if (!chat) return res.status(404).json({ success: false, message: "Chat not found." });
 
-        chat.messages.push({ senderId, text });
+        const newMessage = { senderId, text };
+        chat.messages.push(newMessage);
         await chat.save();
+        
+        // 🟢 NEW: SOCKET.IO EMIT FOR REAL-TIME MESSAGE DELIVERY
+        const io = req.app.get('io');
+        const populatedMessage = { 
+            ...newMessage, 
+            _id: chat.messages[chat.messages.length - 1]._id, // Get the MongoDB ID
+            createdAt: chat.messages[chat.messages.length - 1].createdAt,
+            senderId: { _id: senderId, name: (await User.findById(senderId))?.name } // Populate sender name
+        };
+        io.to(chatId).emit('newMessage', populatedMessage);
+        
         return res.status(200).json({ success: true, message: "Message sent." });
     } catch (error) {
         console.error('Error in sendMessage:', error);
         return res.status(500).json({ success: false, message: "Internal server error" });
     }
 };
+
 
 export const getMessages = async (req, res) => {
     try {

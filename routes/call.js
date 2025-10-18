@@ -1,77 +1,24 @@
 import { Router } from "express";
-// ⭐ NEW: Import for Agora Token Generation
-import { RtcTokenBuilder, RtcRole } from 'agora-access-token'; 
-import dotenv from 'dotenv';
-
-dotenv.config();
-
-// --- Agora Credentials and Configuration ---
-const AGORA_APP_ID = process.env.AGORA_APP_ID; // Assuming you have this in .env
-const AGORA_APP_CERTIFICATE = process.env.AGORA_APP_CERTIFICATE;
-// Token validity time (3600 seconds = 1 hour)
-const expirationTimeInSeconds = 3600; 
-
-// --- Temporary in-memory call state store (Replace with MongoDB/Redis in production) ---
-// Keys are chatId strings, values are call session objects.
-const callSessions = {};
 
 const router = Router();
 
-/**
- * GET /api/calls/token?channelName=...&uid=...
- * Generates a valid Agora RTC Token.
- */
-router.get('/token', (req, res) => {
-    const { channelName, uid } = req.query; // channelName is the chatId
+// --- Socket.io will now handle signaling. The GET /status route is kept for polling fallback. ---
 
-    if (!channelName) {
-        return res.status(400).json({ success: false, message: 'channelName is required.' });
-    }
-    if (!AGORA_APP_ID || !AGORA_APP_CERTIFICATE) {
-        console.error("AGORA_APP_ID or AGORA_APP_CERTIFICATE missing in .env");
-        return res.status(500).json({ success: false, message: 'Server configuration error.' });
-    }
-
-    const currentTimestamp = Math.floor(Date.now() / 1000);
-    const privilegeExpiredTs = currentTimestamp + expirationTimeInSeconds;
-
-    // Use RtcRole.PUBLISHER for users who need to send audio (all users in a call)
-    const token = RtcTokenBuilder.buildTokenWithUid(
-        AGORA_APP_ID,
-        AGORA_APP_CERTIFICATE,
-        channelName,
-        parseInt(uid), // Use the specific UID or 0 from the client
-        RtcRole.PUBLISHER,
-        privilegeExpiredTs
-    );
-
-    return res.status(200).json({ token: token, success: true });
-});
-
-/**
- * POST /api/calls/initiate
- * Handles the caller initiating a new call.
- */
+// POST /api/calls/initiate
+// This route now emits a signal to the recipient's chat room.
 router.post('/initiate', (req, res) => {
     const { chatId, callerId, recipientId } = req.body;
-
-    // Check if a call is already active for this chat
-    if (callSessions[chatId] && callSessions[chatId].status !== 'idle') {
-         return res.status(400).json({
-            success: false,
-            message: `A call session is already ${callSessions[chatId].status}.`,
-        });
-    }
-
-    // Set call status to 'calling' (ringing on recipient's end)
-    callSessions[chatId] = {
-        status: 'calling', 
+    
+    const io = req.app.get('io');
+    
+    // 🟢 1. EMIT SIGNAL TO THE RECIPIENT'S CHAT ROOM
+    io.to(chatId).emit('incomingCall', {
+        chatId: chatId,
         callerId: callerId,
         recipientId: recipientId,
-        startTime: Date.now(),
-    };
+    });
     
-    console.log(`Call initiated for Chat ${chatId}. Caller: ${callerId}.`);
+    console.log(`Call initiated signal emitted for Chat ${chatId}. Caller: ${callerId}`);
 
     return res.status(200).json({
         success: true,
@@ -80,76 +27,53 @@ router.post('/initiate', (req, res) => {
     });
 });
 
-/**
- * GET /api/calls/status
- * Fetched by the frontend (polling) to check if there is an incoming or active call.
- */
+// ⚠️ Note: The GET /status route is now redundant for the ChatScreen's main logic
+// but is kept here for backward compatibility or as a safety net. 
+// In a true real-time app, you would rely purely on sockets.
 router.get('/status', (req, res) => {
-    const { chatId } = req.query;
-    const session = callSessions[chatId];
-    
-    if (session && session.status !== 'idle') {
-        // Return current call status and related user IDs
-        return res.status(200).json({
-            success: true,
-            status: session.status,
-            callerId: session.callerId,
-            recipientId: session.recipientId,
-        });
-    }
-
-    // Default status if no call is active
+    // This logic is now managed by the client using the socket.
     return res.status(200).json({
         success: true,
-        status: 'idle',
+        status: 'idle', // Hardcoded as the logic moved to client/socket signaling
     });
 });
 
-/**
- * POST /api/calls/accept
- * Called by the recipient's phone once their Agora SDK successfully connects (onJoinChannelSuccess).
- */
+// POST /api/calls/accept
+// This route now emits a signal back to the caller's chat room to confirm the recipient is joining.
 router.post('/accept', (req, res) => {
-    const { chatId, userId } = req.body; // userId is the one who accepted
+    const { chatId, userId } = req.body;
+    const io = req.app.get('io');
 
-    if (callSessions[chatId] && callSessions[chatId].status === 'calling') {
-        // Update status to 'active' once the second user joins the Agora channel
-        callSessions[chatId].status = 'active';
-        
-        console.log(`User ${userId} accepted call in Chat ${chatId}. Status: Active.`);
-        return res.status(200).json({
-            success: true,
-            message: 'Call accepted.',
-            callStatus: 'active'
-        });
-    }
+    // 🟢 2. EMIT SIGNAL TO CONFIRM ACCEPTANCE
+    io.to(chatId).emit('callAccepted', {
+        chatId: chatId,
+        acceptorId: userId,
+    });
     
-    // If the session is already active or doesn't exist, return success anyway or 404
-    if (callSessions[chatId] && callSessions[chatId].status === 'active') {
-        return res.status(200).json({ success: true, message: 'Call already active.' });
-    }
-
-    return res.status(404).json({ success: false, message: 'Call session not found or already ended.' });
+    console.log(`User ${userId} accepted call signal emitted for Chat ${chatId}.`);
+    
+    return res.status(200).json({
+        success: true,
+        message: 'Call accepted signal sent.',
+        callStatus: 'active'
+    });
 });
 
-/**
- * POST /api/calls/end
- * Called by either user when they hang up.
- */
+// POST /api/calls/end
+// This route now emits a signal to both users in the chat room that the call is over.
 router.post('/end', (req, res) => {
-    const { chatId } = req.body;
+    const { chatId, userId } = req.body;
+    const io = req.app.get('io');
+
+    // 🟢 3. EMIT SIGNAL THAT CALL HAS ENDED
+    io.to(chatId).emit('callEnded', {
+        chatId: chatId,
+        enderId: userId,
+    });
+
+    console.log(`Call end signal emitted for Chat ${chatId}.`);
     
-    if (callSessions[chatId]) {
-        // Remove the call session to reset the status to 'idle'
-        delete callSessions[chatId];
-        console.log(`Call ended for Chat ${chatId}.`);
-        return res.status(200).json({
-            success: true,
-            message: 'Call ended.',
-        });
-    }
-    
-    return res.status(200).json({ success: true, message: 'Call already ended or was not active.' });
+    return res.status(200).json({ success: true, message: 'Call ended signal sent.' });
 });
 
 export default router;
