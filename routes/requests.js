@@ -13,6 +13,9 @@ import {
   completeRequest,
 } from '../controllers/auth.js';
 
+// ✅ NEW: Import the token generator
+import { generateRtcToken } from '../controllers/token.js';
+
 // ✅ FIX: Import the shop controller functions
 import { addShop, getShops } from '../controllers/shop.js';
 
@@ -39,5 +42,8 @@ router.post('/send-message', sendMessage);
 router.get('/chat-messages', getMessages);
 
 router.post('/request-online', sendOnlineRequest);
+
+// ✅ NEW: Agora Token Generation Route
+router.get('/get-rtc-token', generateRtcToken);
 
 export default router;

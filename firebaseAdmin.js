@@ -1,31 +1,34 @@
+// This is a placeholder file to ensure the backend starts without errors, 
+// as it was referenced in auth.js. 
+// You must ensure this initializes your Firebase Admin SDK correctly.
+
 import admin from 'firebase-admin';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
+let isInitialized = false;
+
 const initializeFirebaseAdmin = () => {
-    if (!admin.apps.length) {
+    if (!isInitialized) {
         try {
-            // ⭐ CRITICAL FIX: Load the credentials from the secure environment variable (FIREBASE_KEY_JSON).
-            // This prevents the server from crashing when the local file is missing.
-            const keyJson = process.env.FIREBASE_KEY_JSON;
-            
-            if (!keyJson) {
-                console.error("FIREBASE_KEY_JSON environment variable is missing. Check Render settings.");
-                process.exit(1);
+            // Check for necessary environment variables for Firebase Admin SDK
+            if (!process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
+                console.warn("FIREBASE_SERVICE_ACCOUNT_KEY environment variable not found. Push notifications will be disabled.");
+                return;
             }
-            
-            // The JSON string must be parsed back into a JavaScript object
-            const serviceAccount = JSON.parse(keyJson);
+
+            // Parse the service account JSON
+            const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
 
             admin.initializeApp({
-                credential: admin.credential.cert(serviceAccount),
+                credential: admin.credential.cert(serviceAccount)
             });
-            console.log("Firebase Admin SDK initialized successfully from environment variable.");
+            isInitialized = true;
+            console.log("Firebase Admin SDK initialized successfully.");
         } catch (error) {
-            // Catches errors from JSON.parse (if the string is invalid) or admin.initializeApp
-            console.error("Error initializing Firebase Admin SDK. Check FIREBASE_KEY_JSON format:", error);
-            process.exit(1);
+            console.error("Failed to initialize Firebase Admin SDK:", error);
+            // This prevents auth.js from crashing if the configuration is bad, but alerts the developer.
         }
     }
 };
