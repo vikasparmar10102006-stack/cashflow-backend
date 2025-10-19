@@ -240,6 +240,63 @@ export const getRequestAcceptors = async (req, res) => {
     }
 };
 
+
+// 🟢 NEW: IMPLEMENTATION OF `completeRequest`
+export const completeRequest = async (req, res) => {
+    try {
+        const { requesterEmail, requestId, acceptorId } = req.body;
+        
+        // 1. Find the requester and the sent request
+        const requester = await User.findOne({ email: requesterEmail });
+        if (!requester) return res.status(404).json({ success: false, message: "Requester not found." });
+
+        const sentRequestIndex = requester.sentRequests.findIndex(req => req._id.toString() === requestId);
+        if (sentRequestIndex === -1) return res.status(404).json({ success: false, message: "Sent request not found." });
+
+        const sentRequest = requester.sentRequests[sentRequestIndex];
+        
+        // 2. Validate the request state
+        if (sentRequest.status === 'completed') {
+            return res.status(400).json({ success: false, message: "This request is already completed." });
+        }
+        
+        // 3. Update status of the sent request to 'completed'
+        await User.updateOne(
+            { _id: requester._id, "sentRequests._id": requestId },
+            { $set: { "sentRequests.$.status": "completed" } }
+        );
+
+        // 4. Find all other users who received this request and remove it from their incoming list
+        // This query finds all users whose incomingRequests array contains an element with the given requestId.
+        await User.updateMany(
+            { "incomingRequests._id": requestId },
+            { $pull: { incomingRequests: { _id: new mongoose.Types.ObjectId(requestId) } } }
+        );
+
+        // 5. Send a notification to the selected acceptor
+        const acceptor = await User.findById(acceptorId);
+        if (acceptor && acceptor.pushNotificationToken) {
+            const message = {
+                token: acceptor.pushNotificationToken,
+                data: {
+                    type: 'TRANSACTION_COMPLETED',
+                    requestId: requestId,
+                    title: 'Transaction Complete!',
+                    body: `${requester.name} has marked the deal for ₹${sentRequest.amount} as completed.`,
+                },
+            };
+            await admin.messaging().send(message);
+        }
+
+        return res.status(200).json({ success: true, message: "Request marked as completed successfully." });
+
+    } catch (error) {
+        console.error('Error in completeRequest:', error);
+        return res.status(500).json({ success: false, message: "Internal server error" });
+    }
+};
+
+
 // --- Other functions (getNotifications, getSentRequests, etc.) remain the same ---
 
 export const getNotifications = async (req, res) => {
