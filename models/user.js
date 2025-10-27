@@ -22,8 +22,8 @@ const requestSchema = new mongoose.Schema({
   tip: { type: Number, default: 0 },
   instructions: { type: String },
   type: { type: String, enum: ['cash', 'online'], required: true },
-  // 🟢 CHANGE: Added 'completed' status
-  status: { type: String, enum: ['pending', 'accepted', 'declined', 'active', 'completed'], default: 'pending' },
+  // 🟢 EDITED: Added 'expired' status for 24-hour auto-cancellation
+  status: { type: String, enum: ['pending', 'accepted', 'declined', 'active', 'completed', 'expired'], default: 'pending' },
   createdAt: { type: Date, default: Date.now },
   
   // FIX 1: Add chatId to the request schema. This is necessary for INCOMING requests 

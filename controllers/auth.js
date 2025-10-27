@@ -24,6 +24,42 @@ const calculateDistance = (loc1, loc2) => {
     );
 };
 
+// 🟢 EDITED: Function targets any request NOT 'completed' and older than 24 hours.
+const checkAndExpireRequests = async (userId) => {
+    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    // 🟢 CHANGE: The ONLY status exempt from expiration is 'completed'.
+    const exemptStatus = ['completed']; 
+    
+    console.log(`[Expiration Check] Running for user ${userId}. Time threshold: ${twentyFourHoursAgo}`);
+
+    // 1. Expire requests in the user's SENT requests list
+    await User.updateOne(
+        { 
+            _id: userId,
+            "sentRequests.createdAt": { $lt: twentyFourHoursAgo },
+            // 🟢 CHANGE: Check status is NOT 'completed'
+            "sentRequests.status": { $nin: exemptStatus } 
+        },
+        { 
+            $set: { "sentRequests.$.status": "expired" } 
+        }
+    );
+
+    // 2. Expire requests in the user's INCOMING requests list
+    await User.updateOne(
+        { 
+            _id: userId,
+            "incomingRequests.createdAt": { $lt: twentyFourHoursAgo },
+            // 🟢 CHANGE: Check status is NOT 'completed'
+            "incomingRequests.status": { $nin: exemptStatus }
+        },
+        { 
+            $set: { "incomingRequests.$.status": "expired" } 
+        }
+    );
+};
+
+
 // ✅ Full fixed version of authGoogle function — ensures new users get location updated properly
 export const authGoogle = async (req, res) => {
     try {
@@ -164,6 +200,8 @@ export const updateRequestStatus = async (req, res) => {
         if (!acceptor) return res.status(404).json({ success: false, message: "Acceptor or request not found." });
 
         const requestInAcceptor = acceptor.incomingRequests.find(r => r._id.toString() === requestId);
+        if (!requestInAcceptor) return res.status(404).json({ success: false, message: "Request details not found on acceptor." });
+
         if (requestInAcceptor.status !== 'pending') {
              return res.status(400).json({ success: false, message: `Request already has status: ${requestInAcceptor.status}.` });
         }
@@ -197,7 +235,7 @@ export const updateRequestStatus = async (req, res) => {
             }
         );
         
-        // 4. Send a push notification to the requester
+        // 4. Send a push notification to the requester (Existing Logic)
         if (requester.pushNotificationToken) {
             const message = {
                 token: requester.pushNotificationToken,
@@ -213,6 +251,25 @@ export const updateRequestStatus = async (req, res) => {
             await admin.messaging().send(message);
             console.log('Successfully sent new acceptor notification to:', requester.email);
         }
+        
+        // 🟢 5. Emit Socket.io event to the Requester's private user room for real-time deep linking
+        const io = req.app.get('io');
+        const sentRequest = requester.sentRequests.find(req => req._id.toString() === requestId);
+        
+        if (sentRequest) {
+            io.to(requester._id.toString()).emit('requestAccepted', {
+                requestId,
+                chatId,
+                acceptorId: acceptor._id.toString(),
+                acceptorName: acceptor.name,
+                requestAmount: sentRequest.amount.toString(),
+                requestTip: sentRequest.tip.toString(),
+                requestInstructions: sentRequest.instructions || '',
+                requestType: sentRequest.type,
+                requesterId: requester._id.toString(),
+            });
+            console.log(`Emitted real-time 'requestAccepted' event to requester's room: ${requester._id}`);
+        }
 
         return res.status(200).json({ success: true, message: "Request accepted. You can now chat.", chatId });
 
@@ -222,101 +279,34 @@ export const updateRequestStatus = async (req, res) => {
     }
 };
 
-// ✅ --- NEW CONTROLLER FUNCTION `getRequestAcceptors` --- ✅
-export const getRequestAcceptors = async (req, res) => {
-    try {
-        const { userEmail, requestId } = req.query;
-        const user = await User.findOne({ email: userEmail });
-        if (!user) return res.status(404).json({ success: false, message: "User not found." });
-
-        const sentRequest = user.sentRequests.find(req => req._id.toString() === requestId);
-        if (!sentRequest) return res.status(404).json({ success: false, message: "Request not found." });
-
-        return res.status(200).json({ success: true, acceptors: sentRequest.acceptors || [] });
-
-    } catch (error) {
-        console.error('Error in getRequestAcceptors:', error);
-        return res.status(500).json({ success: false, message: "Internal server error" });
-    }
-};
-
-
-// 🟢 NEW: IMPLEMENTATION OF `completeRequest`
-export const completeRequest = async (req, res) => {
-    try {
-        const { requesterEmail, requestId, acceptorId } = req.body;
-        
-        // 1. Find the requester and the sent request
-        const requester = await User.findOne({ email: requesterEmail });
-        if (!requester) return res.status(404).json({ success: false, message: "Requester not found." });
-
-        const sentRequestIndex = requester.sentRequests.findIndex(req => req._id.toString() === requestId);
-        if (sentRequestIndex === -1) return res.status(404).json({ success: false, message: "Sent request not found." });
-
-        const sentRequest = requester.sentRequests[sentRequestIndex];
-        
-        // 2. Validate the request state
-        if (sentRequest.status === 'completed') {
-            return res.status(400).json({ success: false, message: "This request is already completed." });
-        }
-        
-        // 3. Update status of the sent request to 'completed'
-        await User.updateOne(
-            { _id: requester._id, "sentRequests._id": requestId },
-            { $set: { "sentRequests.$.status": "completed" } }
-        );
-
-        // 4. Find all other users who received this request and remove it from their incoming list
-        // This query finds all users whose incomingRequests array contains an element with the given requestId.
-        await User.updateMany(
-            { "incomingRequests._id": requestId },
-            { $pull: { incomingRequests: { _id: new mongoose.Types.ObjectId(requestId) } } }
-        );
-
-        // 5. Send a notification to the selected acceptor
-        const acceptor = await User.findById(acceptorId);
-        if (acceptor && acceptor.pushNotificationToken) {
-            const message = {
-                token: acceptor.pushNotificationToken,
-                data: {
-                    type: 'TRANSACTION_COMPLETED',
-                    requestId: requestId,
-                    title: 'Transaction Complete!',
-                    body: `${requester.name} has marked the deal for ₹${sentRequest.amount} as completed.`,
-                },
-            };
-            await admin.messaging().send(message);
-        }
-
-        return res.status(200).json({ success: true, message: "Request marked as completed successfully." });
-
-    } catch (error) {
-        console.error('Error in completeRequest:', error);
-        return res.status(500).json({ success: false, message: "Internal server error" });
-    }
-};
-
-
-// --- Other functions (getNotifications, getSentRequests, etc.) remain the same ---
-
+// 🟢 EDITED: Call checkAndExpireRequests before returning data
 export const getNotifications = async (req, res) => {
     try {
         const { userEmail } = req.query;
         const user = await User.findOne({ email: userEmail });
         if (!user) return res.status(404).json({ success: false, message: "User not found." });
-        return res.status(200).json({ success: true, notifications: user.incomingRequests });
+        
+        await checkAndExpireRequests(user._id);
+        const updatedUser = await User.findById(user._id); // Re-fetch updated user
+        
+        return res.status(200).json({ success: true, notifications: updatedUser.incomingRequests });
     } catch (error) {
         console.error('Error in getNotifications:', error);
         return res.status(500).json({ success: false, message: "Internal server error" });
     }
 };
 
+// 🟢 EDITED: Call checkAndExpireRequests before returning data
 export const getSentRequests = async (req, res) => {
     try {
         const { userEmail } = req.query;
         const user = await User.findOne({ email: userEmail });
         if (!user) return res.status(404).json({ success: false, message: "User not found." });
-        return res.status(200).json({ success: true, sentRequests: user.sentRequests });
+        
+        await checkAndExpireRequests(user._id);
+        const updatedUser = await User.findById(user._id); // Re-fetch updated user
+        
+        return res.status(200).json({ success: true, sentRequests: updatedUser.sentRequests });
     } catch (error) {
         console.error('Error in getSentRequests:', error);
         return res.status(500).json({ success: false, message: "Internal server error" });
@@ -328,7 +318,12 @@ export const getPendingRequestsCount = async (req, res) => {
         const { userEmail } = req.query;
         const user = await User.findOne({ email: userEmail });
         if (!user) return res.status(404).json({ success: false, message: "User not found." });
-        const pendingCount = user.incomingRequests.filter(req => req.status === 'pending').length;
+        
+        // Ensure pending status is correct before counting
+        await checkAndExpireRequests(user._id);
+        const updatedUser = await User.findById(user._id);
+        
+        const pendingCount = updatedUser.incomingRequests.filter(req => req.status === 'pending').length;
         return res.status(200).json({ success: true, count: pendingCount });
     } catch (error) {
         console.error('Error in getPendingRequestsCount:', error);
@@ -383,3 +378,75 @@ export const getMessages = async (req, res) => {
 };
 
 export const sendOnlineRequest = sendCashRequest;
+
+export const getRequestAcceptors = async (req, res) => {
+    try {
+        const { userEmail, requestId } = req.query;
+        const user = await User.findOne({ email: userEmail });
+        if (!user) return res.status(404).json({ success: false, message: "User not found." });
+
+        const sentRequest = user.sentRequests.find(req => req._id.toString() === requestId);
+        if (!sentRequest) return res.status(404).json({ success: false, message: "Request not found." });
+
+        return res.status(200).json({ success: true, acceptors: sentRequest.acceptors || [] });
+
+    } catch (error) {
+        console.error('Error in getRequestAcceptors:', error);
+        return res.status(500).json({ success: false, message: "Internal server error" });
+    }
+};
+
+
+export const completeRequest = async (req, res) => {
+    try {
+        const { requesterEmail, requestId, acceptorId } = req.body;
+        
+        // 1. Find the requester and the sent request
+        const requester = await User.findOne({ email: requesterEmail });
+        if (!requester) return res.status(404).json({ success: false, message: "Requester not found." });
+
+        const sentRequestIndex = requester.sentRequests.findIndex(req => req._id.toString() === requestId);
+        if (sentRequestIndex === -1) return res.status(404).json({ success: false, message: "Sent request not found." });
+
+        const sentRequest = requester.sentRequests[sentRequestIndex];
+        
+        // 2. Validate the request state
+        if (sentRequest.status === 'completed') {
+            return res.status(400).json({ success: false, message: "This request is already completed." });
+        }
+        
+        // 3. Update status of the sent request to 'completed'
+        await User.updateOne(
+            { _id: requester._id, "sentRequests._id": requestId },
+            { $set: { "sentRequests.$.status": "completed" } }
+        );
+
+        // 4. Find all other users who received this request and remove it from their incoming list
+        // This query finds all users whose incomingRequests array contains an element with the given requestId.
+        await User.updateMany(
+            { "incomingRequests._id": requestId },
+            { $pull: { incomingRequests: { _id: new mongoose.Types.ObjectId(requestId) } } }
+        );
+
+        // 5. Send a notification to the selected acceptor
+        const acceptor = await User.findById(acceptorId);
+        if (acceptor && acceptor.pushNotificationToken) {
+            const message = {
+                token: acceptor.pushNotificationToken,
+                data: {
+                    type: 'TRANSACTION_COMPLETED',
+                    requestId: requestId,
+                    title: 'Transaction Complete!',
+                    body: `${requester.name} has marked the deal for ₹${sentRequest.amount} as completed.`,
+                },
+            };
+            await admin.messaging().send(message);
+        }
+
+        return res.status(200).json({ success: true, message: "Request marked as completed successfully." });
+
+    } catch (error) {
+        console.error('Error in completeRequest:', error);
+        return res.status(500).json({ success: false, message: "Internal server error" });
+    }
+};
