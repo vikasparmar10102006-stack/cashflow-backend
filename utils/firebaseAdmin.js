@@ -1,13 +1,32 @@
-// import admin from 'firebase-admin';
-// import serviceAccount from '../<your-service-account-file-name>.json' assert { type: "json" };
+import admin from 'firebase-admin';
+import dotenv from 'dotenv';
 
-// const initializeFirebaseAdmin = () => {
-//     if (!admin.apps.length) {
-//         admin.initializeApp({
-//             credential: admin.credential.cert(serviceAccount),
-//         });
-//         console.log("Firebase Admin SDK initialized successfully.");
-//     }
-// };
+dotenv.config();
 
-// export default initializeFirebaseAdmin;
+let isInitialized = false;
+
+const initializeFirebaseAdmin = () => {
+    if (!isInitialized) {
+        try {
+            // Check for necessary environment variables for Firebase Admin SDK
+            if (!process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
+                console.warn("FIREBASE_SERVICE_ACCOUNT_KEY environment variable not found. Push notifications will be disabled.");
+                return;
+            }
+
+            // Parse the service account JSON string from the environment variable
+            const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
+
+            admin.initializeApp({
+                credential: admin.credential.cert(serviceAccount)
+            });
+            isInitialized = true;
+            console.log("Firebase Admin SDK initialized successfully.");
+        } catch (error) {
+            console.error("Failed to initialize Firebase Admin SDK:", error);
+            // This prevents auth.js from crashing if the configuration is bad, but alerts the developer.
+        }
+    }
+};
+
+export default initializeFirebaseAdmin;
