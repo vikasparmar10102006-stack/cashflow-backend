@@ -180,28 +180,39 @@ export const sendCashRequest = async (req, res) => {
                 { $push: { incomingRequests: { $each: [newRequest], $position: 0 } } }
             );
 
-            // 🔴 CRITICAL FIX 2: Check if Firebase Admin is initialized before sending notifications
+            // 🔴 CRITICAL FIX 2: Check and isolate Firebase notification sending
             if (admin.apps.length > 0) {
-                const tokens = nearbyRecipients
-                    .map(user => user.pushNotificationToken)
-                    .filter(token => token);
-                
-                if (tokens.length > 0) {
-                    const typeText = requestType === 'cash' ? 'Cash' : 'Online Payment';
-                    const message = {
-                        notification: {
-                            title: `💰 New ${typeText} Request Nearby!`,
-                            body: `${requester.name} is looking for ₹${newRequest.amount}. Tap to view and accept.`,
-                        },
-                        data: {
-                            type: 'NEW_REQUEST_RECEIVED',
-                            requestId: newRequest._id.toString(),
-                        },
-                        tokens: tokens, // Send to all nearby users
-                    };
+                try { 
+                    const tokens = nearbyRecipients
+                        .map(user => user.pushNotificationToken)
+                        .filter(token => token);
                     
-                    await admin.messaging().sendMulticast(message);
-                    console.log(`Successfully sent new request notification to ${tokens.length} users.`);
+                    if (tokens.length > 0) {
+                        const typeText = requestType === 'cash' ? 'Cash' : 'Online Payment';
+                        
+                        // 🟢 FIX: Use sendEachForMulticast and adapt message structure
+                        const multicastMessage = {
+                            notification: {
+                                title: `💰 New ${typeText} Request Nearby!`,
+                                body: `${requester.name} is looking for ₹${newRequest.amount}. Tap to view and accept.`,
+                            },
+                            data: {
+                                type: 'NEW_REQUEST_RECEIVED',
+                                requestId: newRequest._id.toString(),
+                            },
+                        };
+                        
+                        const response = await admin.messaging().sendEachForMulticast({
+                            ...multicastMessage,
+                            tokens: tokens, // Tokens array is passed here
+                        });
+                        
+                        console.log(`Successfully sent new request notification via sendEachForMulticast. Successes: ${response.successCount}, Failures: ${response.failureCount}.`);
+                    }
+                } catch (firebaseError) {
+                    // Log the error but allow the request to proceed successfully
+                    console.error('Firebase Error during sendEachForMulticast (Configuration Issue):', firebaseError);
+                    console.warn("Notification failed, but transaction proceeded. Check FIREBASE_SERVICE_ACCOUNT_KEY.");
                 }
             } else {
                 console.warn("Firebase Admin not initialized. Skipping push notification for new request.");
@@ -212,12 +223,15 @@ export const sendCashRequest = async (req, res) => {
             $push: { sentRequests: { $each: [newRequest], $position: 0 } }
         });
 
+        // Return 200 OK even if notification failed.
         return res.status(200).json({ success: true, message: "Request sent.", requestId: newRequest._id });
     } catch (error) {
-        console.error('Error in sendCashRequest:', error);
+        // Only catch database/logic errors here. Firebase errors are now handled above.
+        console.error('Error in sendCashRequest (MongoDB/Logic):', error);
         return res.status(500).json({ success: false, message: "Internal server error" });
     }
 };
+
 
 // ✅ --- REWRITTEN LOGIC FOR `updateRequestStatus` --- ✅
 export const updateRequestStatus = async (req, res) => {
