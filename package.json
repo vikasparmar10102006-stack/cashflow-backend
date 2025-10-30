@@ -38,7 +38,7 @@
     "express": "^5.1.0",
     "fill-range": "^7.1.1",
     "finalhandler": "^2.1.0",
-    "firebase-admin": "^11.11.0",
+    "firebase-admin": "^13.5.0",
     "forwarded": "^0.2.0",
     "fresh": "^2.0.0",
     "function-bind": "^1.1.2",
