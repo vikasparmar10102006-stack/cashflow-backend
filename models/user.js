@@ -15,6 +15,21 @@ const acceptorSchema = new mongoose.Schema({
   acceptedAt: { type: Date, default: Date.now },
 });
 
+// 🟢 NEW: Added isSystemMessage field to message schema
+const messageSchema = new mongoose.Schema({
+    senderId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+    text: { type: String, required: true },
+    createdAt: {
+      type: Date,
+      default: Date.now,
+    },
+    isSystemMessage: { type: Boolean, default: false }, // 🟢 NEW
+});
+
 const requestSchema = new mongoose.Schema({
   requesterId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   requesterName: { type: String, required: true },

@@ -155,24 +155,47 @@ export const sendCashRequest = async (req, res) => {
         });
 
         const radiusInMeters = radius * 1000;
-        const recipientIds = nearbyUsers
-            .filter(user => {
-                // ⭐ ROBUST LOCATION CHECK: Prioritizes the dedicated currentLocation field.
-                const userLocation = user.currentLocation || (user.locationHistory && user.locationHistory.length > 0 ? user.locationHistory[0] : null);
-                
-                if (!userLocation || !userLocation.latitude || !userLocation.longitude) {
-                    return false; // Skip users who have no valid location data
-                }
+        const nearbyRecipients = nearbyUsers.filter(user => {
+            // ⭐ ROBUST LOCATION CHECK: Prioritizes the dedicated currentLocation field.
+            const userLocation = user.currentLocation || (user.locationHistory && user.locationHistory.length > 0 ? user.locationHistory[0] : null);
+            
+            if (!userLocation || !userLocation.latitude || !userLocation.longitude) {
+                return false; // Skip users who have no valid location data
+            }
 
-                return calculateDistance(requesterLocation, userLocation) <= radiusInMeters;
-            })
-            .map(user => user._id);
+            return calculateDistance(requesterLocation, userLocation) <= radiusInMeters;
+        });
+        
+        const recipientIds = nearbyRecipients.map(user => user._id);
         
         if (recipientIds.length > 0) {
             await User.updateMany(
                 { _id: { $in: recipientIds } },
                 { $push: { incomingRequests: { $each: [newRequest], $position: 0 } } }
             );
+
+            // 🟢 NEW: Send push notification to all nearby users
+            const tokens = nearbyRecipients
+                .map(user => user.pushNotificationToken)
+                .filter(token => token);
+            
+            if (tokens.length > 0) {
+                const typeText = requestType === 'cash' ? 'Cash' : 'Online Payment';
+                const message = {
+                    notification: {
+                        title: `💰 New ${typeText} Request Nearby!`,
+                        body: `${requester.name} is looking for ₹${newRequest.amount}. Tap to view and accept.`,
+                    },
+                    data: {
+                        type: 'NEW_REQUEST_RECEIVED',
+                        requestId: newRequest._id.toString(),
+                    },
+                    tokens: tokens, // Send to all nearby users
+                };
+                
+                await admin.messaging().sendMulticast(message);
+                console.log(`Successfully sent new request notification to ${tokens.length} users.`);
+            }
         }
 
         await User.findByIdAndUpdate(requester._id, {
@@ -235,17 +258,27 @@ export const updateRequestStatus = async (req, res) => {
             }
         );
         
-        // 4. Send a push notification to the requester (Existing Logic)
+        // 4. Send a push notification to the requester 
         if (requester.pushNotificationToken) {
+            const sentRequest = requester.sentRequests.find(req => req._id.toString() === requestId);
+            
             const message = {
                 token: requester.pushNotificationToken,
+                notification: {
+                    title: '🤝 Offer Accepted!',
+                    body: `${acceptor.name} has accepted your request for ₹${sentRequest.amount}. Tap to chat.`,
+                },
                 data: {
-                    type: 'REQUEST_ACCEPTED_BY_USER', // New type for this specific event
+                    type: 'REQUEST_ACCEPTED_BY_USER', 
                     requestId, chatId,
                     acceptorId: acceptor._id.toString(),
                     acceptorName: acceptor.name,
-                    title: 'New Offer!',
-                    body: `${acceptor.name} has accepted your request for ₹${requestInAcceptor.amount}.`
+                    // Send full details for deep linking
+                    requestAmount: String(sentRequest.amount),
+                    requestTip: String(sentRequest.tip),
+                    requestInstructions: sentRequest.instructions || '',
+                    requestType: sentRequest.type,
+                    requesterId: requester._id.toString(),
                 },
             };
             await admin.messaging().send(message);
@@ -333,25 +366,53 @@ export const getPendingRequestsCount = async (req, res) => {
 
 export const sendMessage = async (req, res) => {
     try {
-        const { chatId, senderId, text } = req.body;
+        const { chatId, senderId, text, isSystemMessage } = req.body; // 🟢 NEW: isSystemMessage 
         if (!mongoose.Types.ObjectId.isValid(chatId) || !mongoose.Types.ObjectId.isValid(senderId)) {
             return res.status(400).json({ success: false, message: "Invalid chat or sender ID." });
         }
         const chat = await Chat.findById(chatId);
         if (!chat) return res.status(404).json({ success: false, message: "Chat not found." });
 
-        const newMessage = { senderId, text };
+        const sender = await User.findById(senderId);
+        if (!sender) return res.status(404).json({ success: false, message: "Sender not found." });
+
+        const newMessage = { senderId, text, isSystemMessage: isSystemMessage || false }; // 🟢 Store isSystemMessage
         chat.messages.push(newMessage);
         await chat.save();
         
-        // 🟢 NEW: SOCKET.IO EMIT FOR REAL-TIME MESSAGE DELIVERY
+        const lastMessage = chat.messages[chat.messages.length - 1];
+        
+        // 1. Identify the recipient
+        const recipientId = chat.participants.find(p => p.toString() !== senderId);
+        const recipient = await User.findById(recipientId);
+        
+        // 2. Send Push Notification if it's not a system message
+        if (recipient && recipient.pushNotificationToken && !isSystemMessage) {
+            const message = {
+                token: recipient.pushNotificationToken,
+                notification: {
+                    title: `💬 New message from ${sender.name}`,
+                    body: text,
+                },
+                data: {
+                    type: 'NEW_CHAT_MESSAGE',
+                    chatId: chatId,
+                    senderId: senderId,
+                },
+            };
+            // 🟢 Send the notification
+            await admin.messaging().send(message);
+            console.log(`Successfully sent new message notification to: ${recipient.email}`);
+        }
+
+
+        // 3. SOCKET.IO EMIT FOR REAL-TIME MESSAGE DELIVERY
         const io = req.app.get('io');
         const populatedMessage = { 
-            ...newMessage, 
-            _id: chat.messages[chat.messages.length - 1]._id, // Get the MongoDB ID
-            createdAt: chat.messages[chat.messages.length - 1].createdAt,
-            senderId: { _id: senderId, name: (await User.findById(senderId))?.name } // Populate sender name
+            ...lastMessage.toObject(), // Convert to object to spread properties
+            senderId: { _id: senderId, name: sender.name } // Populate sender name
         };
+        // 🟢 Emit to the chat room for real-time display
         io.to(chatId).emit('newMessage', populatedMessage);
         
         return res.status(200).json({ success: true, message: "Message sent." });
@@ -388,7 +449,18 @@ export const getRequestAcceptors = async (req, res) => {
         const sentRequest = user.sentRequests.find(req => req._id.toString() === requestId);
         if (!sentRequest) return res.status(404).json({ success: false, message: "Request not found." });
 
-        return res.status(200).json({ success: true, acceptors: sentRequest.acceptors || [] });
+        return res.status(200).json({ 
+            success: true, 
+            acceptors: sentRequest.acceptors || [],
+            // 🟢 NEW: Return request details for AcceptorsScreen (Needed for chat navigation)
+            requestDetails: {
+                amount: sentRequest.amount,
+                tip: sentRequest.tip,
+                instructions: sentRequest.instructions,
+                type: sentRequest.type,
+                requesterId: sentRequest.requesterId,
+            }
+        });
 
     } catch (error) {
         console.error('Error in getRequestAcceptors:', error);
@@ -433,11 +505,13 @@ export const completeRequest = async (req, res) => {
         if (acceptor && acceptor.pushNotificationToken) {
             const message = {
                 token: acceptor.pushNotificationToken,
+                notification: {
+                    title: '✅ Transaction Complete!',
+                    body: `${requester.name} has marked the deal for ₹${sentRequest.amount} as completed.`,
+                },
                 data: {
                     type: 'TRANSACTION_COMPLETED',
                     requestId: requestId,
-                    title: 'Transaction Complete!',
-                    body: `${requester.name} has marked the deal for ₹${sentRequest.amount} as completed.`,
                 },
             };
             await admin.messaging().send(message);
