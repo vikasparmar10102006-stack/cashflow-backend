@@ -139,6 +139,12 @@ export const sendCashRequest = async (req, res) => {
         const requester = await User.findOne({ email: requesterEmail });
         if (!requester) return res.status(400).json({ success: false, message: "Requester not found." });
         
+        // 🔴 CRITICAL FIX 1: Validate Requester Location before proceeding
+        if (!requesterLocation || typeof requesterLocation.latitude !== 'number' || typeof requesterLocation.longitude !== 'number') {
+            console.error("Validation Error: Requester location is missing or invalid.");
+            return res.status(400).json({ success: false, message: "Requester location is required to send a request." });
+        }
+        
         const newRequest = {
             _id: new mongoose.Types.ObjectId(),
             requesterId: requester._id,
@@ -174,27 +180,31 @@ export const sendCashRequest = async (req, res) => {
                 { $push: { incomingRequests: { $each: [newRequest], $position: 0 } } }
             );
 
-            // 🟢 NEW: Send push notification to all nearby users
-            const tokens = nearbyRecipients
-                .map(user => user.pushNotificationToken)
-                .filter(token => token);
-            
-            if (tokens.length > 0) {
-                const typeText = requestType === 'cash' ? 'Cash' : 'Online Payment';
-                const message = {
-                    notification: {
-                        title: `💰 New ${typeText} Request Nearby!`,
-                        body: `${requester.name} is looking for ₹${newRequest.amount}. Tap to view and accept.`,
-                    },
-                    data: {
-                        type: 'NEW_REQUEST_RECEIVED',
-                        requestId: newRequest._id.toString(),
-                    },
-                    tokens: tokens, // Send to all nearby users
-                };
+            // 🔴 CRITICAL FIX 2: Check if Firebase Admin is initialized before sending notifications
+            if (admin.apps.length > 0) {
+                const tokens = nearbyRecipients
+                    .map(user => user.pushNotificationToken)
+                    .filter(token => token);
                 
-                await admin.messaging().sendMulticast(message);
-                console.log(`Successfully sent new request notification to ${tokens.length} users.`);
+                if (tokens.length > 0) {
+                    const typeText = requestType === 'cash' ? 'Cash' : 'Online Payment';
+                    const message = {
+                        notification: {
+                            title: `💰 New ${typeText} Request Nearby!`,
+                            body: `${requester.name} is looking for ₹${newRequest.amount}. Tap to view and accept.`,
+                        },
+                        data: {
+                            type: 'NEW_REQUEST_RECEIVED',
+                            requestId: newRequest._id.toString(),
+                        },
+                        tokens: tokens, // Send to all nearby users
+                    };
+                    
+                    await admin.messaging().sendMulticast(message);
+                    console.log(`Successfully sent new request notification to ${tokens.length} users.`);
+                }
+            } else {
+                console.warn("Firebase Admin not initialized. Skipping push notification for new request.");
             }
         }
 
