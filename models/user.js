@@ -64,7 +64,7 @@ const userSchema = new mongoose.Schema({
 
   incomingRequests: [requestSchema],
   sentRequests: [requestSchema],
-  pushNotificationToken: { type: String },
+  pushNotificationToken: { type: String }, // 🟢 NEW: For FCM
 }, { timestamps: true });
 
 const User = mongoose.models.User || mongoose.model('User', userSchema);

@@ -283,7 +283,7 @@ export const updateRequestStatus = async (req, res) => {
         );
         
         // 4. Send a push notification to the requester 
-        if (requester.pushNotificationToken) {
+        if (requester.pushNotificationToken && admin.apps.length > 0) {
             const sentRequest = requester.sentRequests.find(req => req._id.toString() === requestId);
             
             const message = {
@@ -372,8 +372,9 @@ export const getSentRequests = async (req, res) => {
 
 export const getPendingRequestsCount = async (req, res) => {
     try {
-        const { userEmail } = req.query;
-        const user = await User.findOne({ email: userEmail });
+        // 🟢 FIX: Use userId instead of userEmail (more robust, although email works)
+        const { userId } = req.query;
+        const user = await User.findById(userId); 
         if (!user) return res.status(404).json({ success: false, message: "User not found." });
         
         // Ensure pending status is correct before counting
@@ -411,12 +412,12 @@ export const sendMessage = async (req, res) => {
         const recipient = await User.findById(recipientId);
         
         // 2. Send Push Notification if it's not a system message
-        if (recipient && recipient.pushNotificationToken && !isSystemMessage) {
+        if (recipient && recipient.pushNotificationToken && !isSystemMessage && admin.apps.length > 0) {
             const message = {
                 token: recipient.pushNotificationToken,
                 notification: {
                     title: `💬 New message from ${sender.name}`,
-                    body: text,
+                    body: text.length > 50 ? `${text.substring(0, 50)}...` : text, // Truncate long messages
                 },
                 data: {
                     type: 'NEW_CHAT_MESSAGE',
@@ -526,7 +527,7 @@ export const completeRequest = async (req, res) => {
 
         // 5. Send a notification to the selected acceptor
         const acceptor = await User.findById(acceptorId);
-        if (acceptor && acceptor.pushNotificationToken) {
+        if (acceptor && acceptor.pushNotificationToken && admin.apps.length > 0) {
             const message = {
                 token: acceptor.pushNotificationToken,
                 notification: {
