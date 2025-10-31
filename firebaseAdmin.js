@@ -20,8 +20,11 @@ const initializeFirebaseAdmin = () => {
     // 🟢 CHANGE 2: Decode the Base64 string to get the original JSON text
     const jsonString = Buffer.from(base64KeyString, 'base64').toString('utf8');
     
-    // 🟢 CHANGE 3: Parse the decoded JSON string
-    const serviceAccount = JSON.parse(jsonString);
+    // 🌟 CRITICAL FIX: Use a regex to strip non-printable characters (like BOM) from the beginning of the string.
+    const cleanJsonString = jsonString.replace(/^\uFEFF/i, '');
+
+    // 🟢 CHANGE 3: Parse the CLEANED decoded JSON string
+    const serviceAccount = JSON.parse(cleanJsonString);
 
     // 🟢 Ensure the project ID is included — critical for correct FCM endpoint
     admin.initializeApp({
