@@ -8,7 +8,7 @@ import initializeFirebaseAdmin from '../firebaseAdmin.js';
 import admin from 'firebase-admin';
 
 dotenv.config();
-initializeFirebaseAdmin();
+// ❌ REMOVED: initializeFirebaseAdmin(); // This is now done correctly in server.js
 
 const calculateDistance = (loc1, loc2) => {
     if (!loc1 || !loc2) return Infinity;
@@ -372,9 +372,8 @@ export const getSentRequests = async (req, res) => {
 
 export const getPendingRequestsCount = async (req, res) => {
     try {
-        // 🟢 FIX: Use userId instead of userEmail (more robust, although email works)
-        const { userId } = req.query;
-        const user = await User.findById(userId); 
+        const { userEmail } = req.query;
+        const user = await User.findOne({ email: userEmail });
         if (!user) return res.status(404).json({ success: false, message: "User not found." });
         
         // Ensure pending status is correct before counting
@@ -417,7 +416,7 @@ export const sendMessage = async (req, res) => {
                 token: recipient.pushNotificationToken,
                 notification: {
                     title: `💬 New message from ${sender.name}`,
-                    body: text.length > 50 ? `${text.substring(0, 50)}...` : text, // Truncate long messages
+                    body: text,
                 },
                 data: {
                     type: 'NEW_CHAT_MESSAGE',
