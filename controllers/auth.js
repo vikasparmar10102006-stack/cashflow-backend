@@ -370,10 +370,15 @@ export const getSentRequests = async (req, res) => {
     }
 };
 
+// ✅ FIX: Use userId from req.query to find user by MongoDB ID
 export const getPendingRequestsCount = async (req, res) => {
     try {
-        const { userEmail } = req.query;
-        const user = await User.findOne({ email: userEmail });
+        // 🟢 CHANGE: Destructure userId instead of userEmail
+        const { userId } = req.query; 
+
+        // 🟢 CHANGE: Find user by _id, using the ObjectId constructor
+        const user = await User.findById(new mongoose.Types.ObjectId(userId));
+
         if (!user) return res.status(404).json({ success: false, message: "User not found." });
         
         // Ensure pending status is correct before counting
