@@ -1,6 +1,7 @@
 // firebaseAdmin.js
 import admin from "firebase-admin";
 import dotenv from "dotenv";
+import { Buffer } from 'buffer'; // Import Buffer for non-browser environments like Node/Render
 dotenv.config();
 
 let isInitialized = false;
@@ -20,9 +21,16 @@ const initializeFirebaseAdmin = () => {
     // 🟢 CHANGE 2: Decode the Base64 string to get the original JSON text
     let jsonString = Buffer.from(base64KeyString, 'base64').toString('utf8');
     
-    // 🌟 CRITICAL FIX: Aggressively remove all non-printable control characters (including BOM, etc.) 
-    // that could corrupt JSON parsing. This is safer for secrets read from environment variables.
-    const cleanJsonString = jsonString.replace(/[\u0000-\u001F\u007F-\u009F\uFEFF]/g, '');
+    // 🌟 CRITICAL FIX: Extract JSON content explicitly. This is the most robust way to handle
+    // invisible/non-printable characters (like the BOM or other control codes) corrupting the string.
+    const jsonMatch = jsonString.match(/\{[\s\S]*\}/);
+    
+    if (!jsonMatch) {
+      console.error("Critical Parsing Error: Could not find valid JSON structure (matching { ... }) after Base64 decoding.");
+      return;
+    }
+
+    const cleanJsonString = jsonMatch[0];
 
     // 🟢 CHANGE 3: Parse the CLEANED decoded JSON string
     const serviceAccount = JSON.parse(cleanJsonString);
