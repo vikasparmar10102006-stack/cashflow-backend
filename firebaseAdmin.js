@@ -18,10 +18,11 @@ const initializeFirebaseAdmin = () => {
     }
     
     // 🟢 CHANGE 2: Decode the Base64 string to get the original JSON text
-    const jsonString = Buffer.from(base64KeyString, 'base64').toString('utf8');
+    let jsonString = Buffer.from(base64KeyString, 'base64').toString('utf8');
     
-    // 🌟 CRITICAL FIX: Use a regex to strip non-printable characters (like BOM) from the beginning of the string.
-    const cleanJsonString = jsonString.replace(/^\uFEFF/i, '');
+    // 🌟 CRITICAL FIX: Aggressively remove all non-printable control characters (including BOM, etc.) 
+    // that could corrupt JSON parsing. This is safer for secrets read from environment variables.
+    const cleanJsonString = jsonString.replace(/[\u0000-\u001F\u007F-\u009F\uFEFF]/g, '');
 
     // 🟢 CHANGE 3: Parse the CLEANED decoded JSON string
     const serviceAccount = JSON.parse(cleanJsonString);
