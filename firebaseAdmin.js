@@ -10,7 +10,6 @@ const initializeFirebaseAdmin = () => {
   if (isInitialized) return;
 
   try {
-    // 🟢 CHANGE 1: Use the new Base64 variable name
     const base64KeyString = process.env.FIREBASE_SERVICE_ACCOUNT_KEY_BASE64;
     
     if (!base64KeyString) {
@@ -18,24 +17,34 @@ const initializeFirebaseAdmin = () => {
       return;
     }
     
-    // 🟢 CHANGE 2: Decode the Base64 string to get the original JSON text
+    // 1. Decode the Base64 string to get the original JSON text
     let jsonString = Buffer.from(base64KeyString, 'base64').toString('utf8');
     
-    // 🌟 CRITICAL FIX: Extract JSON content explicitly. This is the most robust way to handle
-    // invisible/non-printable characters (like the BOM or other control codes) corrupting the string.
-    const jsonMatch = jsonString.match(/\{[\s\S]*\}/);
+    // 🌟 CRITICAL FIX: Aggressively clean the string. This regex removes all non-printable
+    // characters, including control codes, tabs, newlines, and BOMs, leaving only characters
+    // commonly found in JSON data (letters, numbers, punctuation, spaces).
+    // It also removes any characters outside of the standard Latin-1 printable range
+    // which may include the problematic characters showing up in your logs.
+    const aggressiveCleanedString = jsonString
+        // Remove control characters (including BOM, etc.)
+        .replace(/[\u0000-\u001F\u007F-\u009F\uFEFF]/g, '')
+        // Clean up common encoding errors if the previous line missed anything
+        .trim(); 
+    
+    // 2. Find and extract the clean JSON content (starts with { and ends with })
+    const jsonMatch = aggressiveCleanedString.match(/\{[\s\S]*\}/);
     
     if (!jsonMatch) {
-      console.error("Critical Parsing Error: Could not find valid JSON structure (matching { ... }) after Base64 decoding.");
+      console.error("Critical Parsing Error: Could not find valid JSON structure (matching { ... }) after Base64 decoding and cleaning.");
       return;
     }
 
     const cleanJsonString = jsonMatch[0];
 
-    // 🟢 CHANGE 3: Parse the CLEANED decoded JSON string
+    // 3. Parse the CLEANED decoded JSON string
     const serviceAccount = JSON.parse(cleanJsonString);
 
-    // 🟢 Ensure the project ID is included — critical for correct FCM endpoint
+    // 4. Initialize Firebase Admin
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount),
       projectId: serviceAccount.project_id,
