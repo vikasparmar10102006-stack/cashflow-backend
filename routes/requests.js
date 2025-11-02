@@ -27,10 +27,9 @@ router.post('/update-request-status', updateRequestStatus);
 router.post('/complete-request', completeRequest);
 router.get('/notifications', getNotifications);
 router.get('/sent-requests', getSentRequests);
-// 🟢 FIX: Correctly using userId from query
 router.get('/pending-count', getPendingRequestsCount);
 
-// Shop routes
+// Shop routes (FIX for 404 error - Mobile app needs /get-shops)
 router.post('/add-shop', addShop);
 router.get('/get-shops', getShops);
 

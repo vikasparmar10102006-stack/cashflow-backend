@@ -4,9 +4,11 @@ import Chat from '../models/chat.js';
 import dotenv from 'dotenv';
 import { getDistance } from 'geolib';
 import mongoose from 'mongoose';
+import initializeFirebaseAdmin from '../firebaseAdmin.js';
 import admin from 'firebase-admin';
 
 dotenv.config();
+// ❌ REMOVED: initializeFirebaseAdmin(); // This is now done correctly in server.js
 
 const calculateDistance = (loc1, loc2) => {
     if (!loc1 || !loc2) return Infinity;
@@ -58,18 +60,20 @@ const checkAndExpireRequests = async (userId) => {
 };
 
 
-// ✅ Auth Google - Handles social login/registration
+// ✅ Full fixed version of authGoogle function — ensures new users get location updated properly
 export const authGoogle = async (req, res) => {
     try {
         const { userdata, notificationPermission, locationPermission, location, pushNotificationToken } = req.body;
         
         console.log("Received /api/auth/google request body:", JSON.stringify(req.body, null, 2));
 
+        // Simplified user payload extraction
         let userPayload = null;
         if (userdata?.data?.user) userPayload = userdata.data.user;
         else if (userdata?.user) userPayload = userdata.user;
         else if (userdata?.email) userPayload = userdata;
         
+
         if (!userPayload || !userPayload.email) {
             console.error("Validation Error: Could not extract user info or email from 'userdata'.");
             return res.status(400).json({ success: false, message: "Invalid user data structure received." });
@@ -77,8 +81,7 @@ export const authGoogle = async (req, res) => {
         
         const { email, name, givenName, familyName, photo: picture } = userPayload;
 
-        // Find existing user by email or create a new one
-        const userQuery = { email: email };
+        // ✅ 1. Define fields to be set (scalar updates)
         const setFields = {
             name,
             givenName,
@@ -88,9 +91,12 @@ export const authGoogle = async (req, res) => {
             locationPermission,
             pushNotificationToken,
         };
+
+        // ✅ 2. Define the full update query object
         const updateQuery = { $set: setFields };
 
         if (location?.latitude && location?.longitude) {
+            // Add $push operator for locationHistory
             updateQuery.$push = {
                 locationHistory: {
                     $each: [{ ...location, timestamp: new Date() }],
@@ -98,6 +104,8 @@ export const authGoogle = async (req, res) => {
                     $slice: 5,
                 },
             };
+
+            // Also update the dedicated currentLocation field via $set
             updateQuery.$set.currentLocation = {
                 latitude: location.latitude,
                 longitude: location.longitude,
@@ -106,8 +114,9 @@ export const authGoogle = async (req, res) => {
             };
         }
         
+        // Use findOneAndUpdate with the complete updateQuery object
         const updatedUser = await User.findOneAndUpdate(
-            userQuery, 
+            { email: email }, 
             updateQuery, 
             { new: true, upsert: true, runValidators: true }
         );
@@ -124,65 +133,10 @@ export const authGoogle = async (req, res) => {
     }
 };
 
-// 🟢 NEW: authPhone - Handles OTP phone verification login/registration
-export const authPhone = async (req, res) => {
-    try {
-        const { uid, phoneNumber } = req.body; // Received from frontend after Firebase verification
-        
-        if (!uid || !phoneNumber) {
-            return res.status(400).json({ success: false, message: "Missing Firebase UID or phone number." });
-        }
-        
-        // Find user by Firebase UID or Phone Number
-        // Since Firebase guarantees the UID/Phone combo is unique after verification, 
-        // we can upsert based on the UID.
-        
-        const userQuery = { $or: [{ uid }, { phoneNumber }] };
-
-        const updateFields = {
-            $set: {
-                uid: uid,
-                phoneNumber: phoneNumber,
-            },
-            // Note: We intentionally skip updating permissions/location here, 
-            // as those are handled separately on HomeScreen after login.
-        };
-
-        const updatedUser = await User.findOneAndUpdate(
-            userQuery, 
-            updateFields, 
-            { 
-                new: true, 
-                upsert: true, 
-                runValidators: true,
-                // Ensure unique constraints on uid and phoneNumber are handled (sparse: true in schema)
-            }
-        );
-
-        return res.status(updatedUser.isNew ? 201 : 200).json({
-            success: true,
-            message: `User ${updatedUser.isNew ? 'created' : 'updated'} successfully`,
-            user: updatedUser
-        });
-
-    } catch (error) {
-        console.error('Error in authPhone controller:', error);
-        return res.status(500).json({ success: false, message: "Internal server error" });
-    }
-};
-
 export const sendCashRequest = async (req, res) => {
     try {
-        const { requesterEmail, amount, radius, tip, instructions, requestType, requesterLocation, requesterId } = req.body;
-        
-        // 🟢 FIX: Use requesterId if available, fall back to email
-        let requester;
-        if (requesterId) {
-            requester = await User.findById(requesterId);
-        } else if (requesterEmail) {
-            requester = await User.findOne({ email: requesterEmail });
-        }
-        
+        const { requesterEmail, amount, radius, tip, instructions, requestType, requesterLocation } = req.body;
+        const requester = await User.findOne({ email: requesterEmail });
         if (!requester) return res.status(400).json({ success: false, message: "Requester not found." });
         
         // 🔴 CRITICAL FIX 1: Validate Requester Location before proceeding
@@ -194,8 +148,7 @@ export const sendCashRequest = async (req, res) => {
         const newRequest = {
             _id: new mongoose.Types.ObjectId(),
             requesterId: requester._id,
-            // 🟢 FIX: Default to Phone Number if name is missing (for phone-only users)
-            requesterName: requester.name || requester.phoneNumber || 'User',
+            requesterName: requester.name,
             amount: parseFloat(amount),
             tip: tip ? parseFloat(tip) : 0,
             instructions, type: requestType,
@@ -241,7 +194,7 @@ export const sendCashRequest = async (req, res) => {
                         const multicastMessage = {
                             notification: {
                                 title: `💰 New ${typeText} Request Nearby!`,
-                                body: `${newRequest.requesterName} is looking for ₹${newRequest.amount}. Tap to view and accept.`,
+                                body: `${requester.name} is looking for ₹${newRequest.amount}. Tap to view and accept.`,
                             },
                             data: {
                                 type: 'NEW_REQUEST_RECEIVED',
@@ -283,13 +236,14 @@ export const sendCashRequest = async (req, res) => {
 // ✅ --- REWRITTEN LOGIC FOR `updateRequestStatus` --- ✅
 export const updateRequestStatus = async (req, res) => {
     try {
-        const { userId, requestId, newStatus } = req.body; // 🟢 FIX: Changed userEmail to userId 
+        const { userEmail, requestId, newStatus } = req.body;
         if (newStatus !== 'accepted') {
             // For now, we only handle the 'accepted' status for this new logic.
+            // Declining a request can be handled by simply removing it from the user's incoming list if needed.
             return res.status(400).json({ success: false, message: "Only 'accepted' status is handled." });
         }
 
-        const acceptor = await User.findOne({ _id: userId, "incomingRequests._id": requestId }); // 🟢 FIX: Query by _id
+        const acceptor = await User.findOne({ email: userEmail, "incomingRequests._id": requestId });
         if (!acceptor) return res.status(404).json({ success: false, message: "Acceptor or request not found." });
 
         const requestInAcceptor = acceptor.incomingRequests.find(r => r._id.toString() === requestId);
@@ -315,8 +269,7 @@ export const updateRequestStatus = async (req, res) => {
         // 3. Add the acceptor to the requester's list of acceptors for that sent request
         const newAcceptorInfo = {
             acceptorId: acceptor._id,
-            // 🟢 FIX: Use a default name for phone users if needed
-            acceptorName: acceptor.name || acceptor.phoneNumber || 'User',
+            acceptorName: acceptor.name,
             chatId: chatId,
         };
 
@@ -337,13 +290,13 @@ export const updateRequestStatus = async (req, res) => {
                 token: requester.pushNotificationToken,
                 notification: {
                     title: '🤝 Offer Accepted!',
-                    body: `${newAcceptorInfo.acceptorName} has accepted your request for ₹${sentRequest.amount}. Tap to chat.`,
+                    body: `${acceptor.name} has accepted your request for ₹${sentRequest.amount}. Tap to chat.`,
                 },
                 data: {
                     type: 'REQUEST_ACCEPTED_BY_USER', 
                     requestId, chatId,
                     acceptorId: acceptor._id.toString(),
-                    acceptorName: newAcceptorInfo.acceptorName,
+                    acceptorName: acceptor.name,
                     // Send full details for deep linking
                     requestAmount: String(sentRequest.amount),
                     requestTip: String(sentRequest.tip),
@@ -353,7 +306,7 @@ export const updateRequestStatus = async (req, res) => {
                 },
             };
             await admin.messaging().send(message);
-            console.log('Successfully sent new acceptor notification to:', requester.email || requester.phoneNumber);
+            console.log('Successfully sent new acceptor notification to:', requester.email);
         }
         
         // 🟢 5. Emit Socket.io event to the Requester's private user room for real-time deep linking
@@ -365,7 +318,7 @@ export const updateRequestStatus = async (req, res) => {
                 requestId,
                 chatId,
                 acceptorId: acceptor._id.toString(),
-                acceptorName: newAcceptorInfo.acceptorName,
+                acceptorName: acceptor.name,
                 requestAmount: sentRequest.amount.toString(),
                 requestTip: sentRequest.tip.toString(),
                 requestInstructions: sentRequest.instructions || '',
@@ -386,9 +339,8 @@ export const updateRequestStatus = async (req, res) => {
 // 🟢 EDITED: Call checkAndExpireRequests before returning data
 export const getNotifications = async (req, res) => {
     try {
-        // 🟢 FIX: Use userId for querying
-        const { userId } = req.query; 
-        const user = await User.findById(userId); 
+        const { userEmail } = req.query;
+        const user = await User.findOne({ email: userEmail });
         if (!user) return res.status(404).json({ success: false, message: "User not found." });
         
         await checkAndExpireRequests(user._id);
@@ -404,9 +356,8 @@ export const getNotifications = async (req, res) => {
 // 🟢 EDITED: Call checkAndExpireRequests before returning data
 export const getSentRequests = async (req, res) => {
     try {
-        // 🟢 FIX: Use userId for querying
-        const { userId } = req.query; 
-        const user = await User.findById(userId);
+        const { userEmail } = req.query;
+        const user = await User.findOne({ email: userEmail });
         if (!user) return res.status(404).json({ success: false, message: "User not found." });
         
         await checkAndExpireRequests(user._id);
@@ -419,10 +370,15 @@ export const getSentRequests = async (req, res) => {
     }
 };
 
+// ✅ FIX: Use userId from req.query to find user by MongoDB ID
 export const getPendingRequestsCount = async (req, res) => {
     try {
-        const { userId } = req.query;
-        const user = await User.findById(userId); // 🟢 FIX: Find by _id
+        // 🟢 CHANGE: Destructure userId instead of userEmail
+        const { userId } = req.query; 
+
+        // 🟢 CHANGE: Find user by _id, using the ObjectId constructor
+        const user = await User.findById(new mongoose.Types.ObjectId(userId));
+
         if (!user) return res.status(404).json({ success: false, message: "User not found." });
         
         // Ensure pending status is correct before counting
@@ -464,7 +420,7 @@ export const sendMessage = async (req, res) => {
             const message = {
                 token: recipient.pushNotificationToken,
                 notification: {
-                    title: `💬 New message from ${sender.name || sender.phoneNumber || 'User'}`,
+                    title: `💬 New message from ${sender.name}`,
                     body: text,
                 },
                 data: {
@@ -475,7 +431,7 @@ export const sendMessage = async (req, res) => {
             };
             // 🟢 Send the notification
             await admin.messaging().send(message);
-            console.log(`Successfully sent new message notification to: ${recipient.email || recipient.phoneNumber}`);
+            console.log(`Successfully sent new message notification to: ${recipient.email}`);
         }
 
 
@@ -483,8 +439,7 @@ export const sendMessage = async (req, res) => {
         const io = req.app.get('io');
         const populatedMessage = { 
             ...lastMessage.toObject(), // Convert to object to spread properties
-            // 🟢 FIX: Use phoneNumber as fallback name
-            senderId: { _id: senderId, name: sender.name || sender.phoneNumber } 
+            senderId: { _id: senderId, name: sender.name } // Populate sender name
         };
         // 🟢 Emit to the chat room for real-time display
         io.to(chatId).emit('newMessage', populatedMessage);
@@ -503,8 +458,7 @@ export const getMessages = async (req, res) => {
         if (!mongoose.Types.ObjectId.isValid(chatId)) {
             return res.status(400).json({ success: false, message: "Invalid chat ID." });
         }
-        // 🟢 FIX: Add name and phoneNumber to populate fields
-        const chat = await Chat.findById(chatId).populate('messages.senderId', 'name _id phoneNumber'); 
+        const chat = await Chat.findById(chatId).populate('messages.senderId', 'name _id');
         if (!chat) return res.status(404).json({ success: false, message: "Chat not found." });
         return res.status(200).json({ success: true, messages: chat.messages });
     } catch (error) {
@@ -517,8 +471,8 @@ export const sendOnlineRequest = sendCashRequest;
 
 export const getRequestAcceptors = async (req, res) => {
     try {
-        const { userId, requestId } = req.query; // 🟢 FIX: Use userId
-        const user = await User.findById(userId); // 🟢 FIX: Find by _id
+        const { userEmail, requestId } = req.query;
+        const user = await User.findOne({ email: userEmail });
         if (!user) return res.status(404).json({ success: false, message: "User not found." });
 
         const sentRequest = user.sentRequests.find(req => req._id.toString() === requestId);
@@ -546,11 +500,10 @@ export const getRequestAcceptors = async (req, res) => {
 
 export const completeRequest = async (req, res) => {
     try {
-        // 🟢 FIX: Use userId instead of requesterEmail
-        const { requesterId, requestId, acceptorId } = req.body;
+        const { requesterEmail, requestId, acceptorId } = req.body;
         
         // 1. Find the requester and the sent request
-        const requester = await User.findById(requesterId);
+        const requester = await User.findOne({ email: requesterEmail });
         if (!requester) return res.status(404).json({ success: false, message: "Requester not found." });
 
         const sentRequestIndex = requester.sentRequests.findIndex(req => req._id.toString() === requestId);
@@ -583,7 +536,7 @@ export const completeRequest = async (req, res) => {
                 token: acceptor.pushNotificationToken,
                 notification: {
                     title: '✅ Transaction Complete!',
-                    body: `${requester.name || requester.phoneNumber || 'User'} has marked the deal for ₹${sentRequest.amount} as completed.`,
+                    body: `${requester.name} has marked the deal for ₹${sentRequest.amount} as completed.`,
                 },
                 data: {
                     type: 'TRANSACTION_COMPLETED',
