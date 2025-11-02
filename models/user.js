@@ -50,8 +50,15 @@ const requestSchema = new mongoose.Schema({
 });
 
 const userSchema = new mongoose.Schema({
-  email: { type: String, required: true, unique: true },
-  name: { type: String },
+  // Note: Email is no longer required and unique, as phone-only users won't have it.
+  email: { type: String, unique: true, sparse: true }, 
+  
+  // 🟢 NEW: Firebase UID (unique identifier for phone/email users)
+  uid: { type: String, unique: true, sparse: true }, 
+  // 🟢 NEW: Phone Number (unique for phone users)
+  phoneNumber: { type: String, unique: true, sparse: true }, 
+  
+  name: { type: String, default: 'CashFlow User' }, // Default name for phone users
   givenName: { type: String },
   familyName: { type: String },
   picture: { type: String },

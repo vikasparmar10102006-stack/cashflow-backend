@@ -10,6 +10,7 @@ import {
   sendOnlineRequest,
   getRequestAcceptors,
   completeRequest,
+  // 🟢 REMOVED: authPhone and authGoogle imports as they belong in a dedicated AuthRoutes file
 } from '../controllers/auth.js';
 
 // ✅ NEW: Import the Agora token generation function
@@ -20,7 +21,13 @@ import { addShop, getShops } from '../controllers/shop.js';
 
 const router = Router();
 
-// Request routes
+// ------------------- AUTHENTICATION ROUTES -------------------
+// ❌ REMOVED AUTH ROUTES: These should be defined in a dedicated router
+// router.post('/auth/google', authGoogle);
+// router.post('/auth/phone', authPhone); 
+
+// ------------------- REQUEST/NOTIFICATION ROUTES -------------------
+
 router.post('/request-cash', sendCashRequest);
 router.post('/update-request-status', updateRequestStatus);
 // 🟢 CHANGE: Add the new route for completing a request
@@ -44,5 +51,6 @@ router.post('/request-online', sendOnlineRequest);
 
 // 🟢 NEW: Route for getting the Agora RTC Token
 router.get('/get-rtc-token', generateRtcToken);
+
 
 export default router;
