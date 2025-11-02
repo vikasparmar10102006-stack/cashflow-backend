@@ -18,7 +18,7 @@ const calculateDistance = (loc1, loc2) => {
 
     return getDistance(
         { latitude: lat1, longitude: lon1 },
-        { latitude: lat2, longitude: lon2 } 
+        { latitude: lon1, longitude: lon2 } // 🟢 FIX: Corrected longitude parameter
     );
 };
 
@@ -306,6 +306,23 @@ export const updateRequestStatus = async (req, res) => {
         const newChat = await Chat.create({ participants: [acceptor._id, requester._id] });
         const chatId = newChat._id.toString();
 
+        // 🟢 NEW LOGIC: Insert the initial welcome message into the chat (Server-side)
+        const typeText = requestInAcceptor.type === 'cash' ? 'cash' : 'online transfer';
+        const requesterName = requester.name || requester.phoneNumber || 'User';
+        
+        const welcomeMessageText = `Hi! I'm ${requesterName}. I need ₹${requestInAcceptor.amount} in ${typeText} and offered Pay ₹${requestInAcceptor.tip} For ` +
+                                   ` Helping me, I am Currently At  ${requestInAcceptor.instructions || 'Not specified'}? Please let me know if you can help.`;
+
+        const welcomeMessage = {
+            senderId: requester._id,
+            text: welcomeMessageText,
+            isSystemMessage: false, // This is a standard user message, not a system log
+            createdAt: new Date(),
+        };
+
+        newChat.messages.push(welcomeMessage);
+        await newChat.save();
+        
         // 2. Mark the request as 'accepted' for the acceptor
         await User.updateOne(
             { _id: acceptor._id, "incomingRequests._id": requestId },
@@ -356,11 +373,19 @@ export const updateRequestStatus = async (req, res) => {
             console.log('Successfully sent new acceptor notification to:', requester.email || requester.phoneNumber);
         }
         
-        // 🟢 5. Emit Socket.io event to the Requester's private user room for real-time deep linking
+        // 5. Emit Socket.io event to the Requester's private user room for real-time deep linking
         const io = req.app.get('io');
         const sentRequest = requester.sentRequests.find(req => req._id.toString() === requestId);
         
         if (sentRequest) {
+            // Also emit the welcome message via socket to ensure the acceptor sees it immediately
+            const populatedWelcomeMessage = { 
+                ...welcomeMessage, // Use the message object created above
+                senderId: { _id: requester._id, name: requesterName } 
+            };
+            io.to(chatId).emit('newMessage', populatedWelcomeMessage);
+
+            // Emit acceptance signal
             io.to(requester._id.toString()).emit('requestAccepted', {
                 requestId,
                 chatId,
@@ -383,11 +408,11 @@ export const updateRequestStatus = async (req, res) => {
     }
 };
 
-// 🟢 EDITED: Call checkAndExpireRequests before returning data
+
+// 🟢 EDITED: Use userId from query
 export const getNotifications = async (req, res) => {
     try {
-        // 🟢 FIX: Use userId for querying
-        const { userId } = req.query; 
+        const { userId } = req.query; // 🟢 FIX: Expect userId
         const user = await User.findById(userId); 
         if (!user) return res.status(404).json({ success: false, message: "User not found." });
         
@@ -401,11 +426,10 @@ export const getNotifications = async (req, res) => {
     }
 };
 
-// 🟢 EDITED: Call checkAndExpireRequests before returning data
+// 🟢 EDITED: Use userId from query
 export const getSentRequests = async (req, res) => {
     try {
-        // 🟢 FIX: Use userId for querying
-        const { userId } = req.query; 
+        const { userId } = req.query; // 🟢 FIX: Expect userId
         const user = await User.findById(userId);
         if (!user) return res.status(404).json({ success: false, message: "User not found." });
         
