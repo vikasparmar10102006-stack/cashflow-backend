@@ -173,9 +173,53 @@ export const authPhone = async (req, res) => {
 
 export const sendCashRequest = async (req, res) => {
     try {
-        // ... (existing setup code remains unchanged)
+        const { requesterEmail, amount, radius, tip, instructions, requestType, requesterLocation, requesterId } = req.body;
         
-        // ... (existing filtering and logic to find nearbyRecipients and recipientIds)
+        // 🟢 FIX: Use requesterId if available, fall back to email
+        let requester;
+        if (requesterId) {
+            requester = await User.findById(requesterId);
+        } else if (requesterEmail) {
+            requester = await User.findOne({ email: requesterEmail });
+        }
+        
+        if (!requester) return res.status(400).json({ success: false, message: "Requester not found." });
+        
+        // 🔴 CRITICAL FIX 1: Validate Requester Location before proceeding
+        if (!requesterLocation || typeof requesterLocation.latitude !== 'number' || typeof requesterLocation.longitude !== 'number') {
+            console.error("Validation Error: Requester location is missing or invalid.");
+            return res.status(400).json({ success: false, message: "Requester location is required to send a request." });
+        }
+        
+        const newRequest = {
+            _id: new mongoose.Types.ObjectId(),
+            requesterId: requester._id,
+            // 🟢 FIX: Default to Phone Number if name is missing (for phone-only users)
+            requesterName: requester.name || requester.phoneNumber || 'User',
+            amount: parseFloat(amount),
+            tip: tip ? parseFloat(tip) : 0,
+            instructions, type: requestType,
+            status: 'pending', createdAt: new Date(),
+        };
+
+        // 1. Find all potential nearby users (everyone except the requester)
+        const nearbyUsers = await User.find({
+            _id: { $ne: requester._id },
+        });
+
+        const radiusInMeters = radius * 1000;
+        const nearbyRecipients = nearbyUsers.filter(user => {
+            // ⭐ ROBUST LOCATION CHECK: Prioritizes the dedicated currentLocation field.
+            const userLocation = user.currentLocation || (user.locationHistory && user.locationHistory.length > 0 ? user.locationHistory[0] : null);
+            
+            if (!userLocation || !userLocation.latitude || !userLocation.longitude) {
+                return false; // Skip users who have no valid location data
+            }
+
+            return calculateDistance(requesterLocation, userLocation) <= radiusInMeters;
+        });
+        
+        const recipientIds = nearbyRecipients.map(user => user._id);
         
         if (recipientIds.length > 0) {
             await User.updateMany(
@@ -186,19 +230,14 @@ export const sendCashRequest = async (req, res) => {
             // 🔴 CRITICAL FIX 2: Check and isolate Firebase notification sending
             if (admin.apps.length > 0) {
                 try { 
-                    const allTokensWithUsers = nearbyRecipients
-                        .filter(user => user.pushNotificationToken)
-                        .map(user => ({ token: user.pushNotificationToken, userId: user._id }));
-                    
-                    // 🌟 NEW FILTER: Exclude the requester's own token from the list (using the token string)
-                    const requesterToken = requester.pushNotificationToken;
-                    const tokensToSend = allTokensWithUsers.filter(item => item.token !== requesterToken);
-                    
-                    const tokens = tokensToSend.map(item => item.token);
+                    const tokens = nearbyRecipients
+                        .map(user => user.pushNotificationToken)
+                        .filter(token => token);
                     
                     if (tokens.length > 0) {
                         const typeText = requestType === 'cash' ? 'Cash' : 'Online Payment';
                         
+                        // 🟢 FIX: Use sendEachForMulticast and adapt message structure
                         const multicastMessage = {
                             notification: {
                                 title: `💰 New ${typeText} Request Nearby!`,
@@ -216,35 +255,6 @@ export const sendCashRequest = async (req, res) => {
                         });
                         
                         console.log(`Successfully sent new request notification via sendEachForMulticast. Successes: ${response.successCount}, Failures: ${response.failureCount}.`);
-
-                        // 🚀 NEW LOGIC: Identify failed tokens and remove them from the database
-                        const failedTokens = [];
-                        response.responses.forEach((resp, index) => {
-                            // Check for failure and if the error indicates an invalid/unregistered token
-                            if (!resp.success && resp.error && 
-                                (resp.error.code === 'messaging/invalid-registration-token' ||
-                                 resp.error.code === 'messaging/registration-token-not-registered')) {
-                                
-                                // Find the token/user pair that corresponds to this failed index
-                                const failedItem = tokensToSend[index];
-                                if (failedItem) {
-                                    failedTokens.push(failedItem.token);
-                                }
-                            }
-                        });
-
-                        if (failedTokens.length > 0) {
-                            console.log(`Cleaning up ${failedTokens.length} stale tokens.`);
-                            // Set the pushNotificationToken to null for all users with these failed tokens
-                            await User.updateMany(
-                                { pushNotificationToken: { $in: failedTokens } },
-                                { $set: { pushNotificationToken: null } }
-                            );
-                            console.log("Stale tokens removed from database.");
-                        }
-
-                    } else {
-                         console.log("No valid recipient tokens found after excluding requester's token. Skipping push notification.");
                     }
                 } catch (firebaseError) {
                     // Log the error but allow the request to proceed successfully
@@ -255,8 +265,6 @@ export const sendCashRequest = async (req, res) => {
                 console.warn("Firebase Admin not initialized. Skipping push notification for new request.");
             }
         }
-
-        // ... (existing code to update requester's sentRequests)
 
         await User.findByIdAndUpdate(requester._id, {
             $push: { sentRequests: { $each: [newRequest], $position: 0 } }
