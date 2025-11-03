@@ -231,8 +231,10 @@ export const sendCashRequest = async (req, res) => {
             if (admin.apps.length > 0) {
                 try { 
                     const tokens = nearbyRecipients
-                        .map(user => user.pushNotificationToken)
-                        .filter(token => token);
+                     .filter(user => user._id.toString() !== requester._id.toString()) // exclude self again
+                     .map(user => user.pushNotificationToken)
+                     .filter(token => token && token !== requester.pushNotificationToken); // also exclude same token
+
                     
                     if (tokens.length > 0) {
                         const typeText = requestType === 'cash' ? 'Cash' : 'Online Payment';
