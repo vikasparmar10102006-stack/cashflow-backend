@@ -230,10 +230,14 @@ export const sendCashRequest = async (req, res) => {
             // 🔴 CRITICAL FIX 2: Check and isolate Firebase notification sending
             if (admin.apps.length > 0) {
                 try { 
-                    const tokens = nearbyRecipients
+                    const allTokens = nearbyRecipients
                         .map(user => user.pushNotificationToken)
                         .filter(token => token);
                     
+                    // 🌟 NEW FILTER: Exclude the requester's own token from the list
+                    const requesterToken = requester.pushNotificationToken;
+                    const tokens = allTokens.filter(token => token !== requesterToken);
+
                     if (tokens.length > 0) {
                         const typeText = requestType === 'cash' ? 'Cash' : 'Online Payment';
                         
@@ -255,6 +259,8 @@ export const sendCashRequest = async (req, res) => {
                         });
                         
                         console.log(`Successfully sent new request notification via sendEachForMulticast. Successes: ${response.successCount}, Failures: ${response.failureCount}.`);
+                    } else {
+                         console.log("No valid recipient tokens found after excluding requester's token. Skipping push notification.");
                     }
                 } catch (firebaseError) {
                     // Log the error but allow the request to proceed successfully
