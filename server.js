@@ -65,7 +65,13 @@ const startServer = async () => {
         // 泙 4. PASS SOCKET.IO INSTANCE TO ROUTES (for call/chat events)
         app.set('io', io);
 
-        app.use(cors({origin: '*'}));
+        // 🟢 FIX: Make CORS more explicit for Axios HTTP requests
+        app.use(cors({
+            origin: '*', // Allow all origins
+            methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], // Allow standard HTTP methods
+            allowedHeaders: ['Content-Type', 'Authorization'], // Allow necessary headers
+        }));
+        
         app.use(express.json());
         app.use(bodyParser.json());
         app.use(bodyParser.urlencoded({ extended: true }));
