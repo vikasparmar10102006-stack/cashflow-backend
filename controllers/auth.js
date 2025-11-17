@@ -357,7 +357,7 @@ export const updateRequestStatus = async (req, res) => {
             console.log('Successfully sent new acceptor notification to:', requester.email || requester.phoneNumber);
         }
         
-        // 🟢 5. Emit Socket.io event to the Requester's private user room for real-time deep linking
+        // 5. Emit Socket.io event to the Requester's private user room for real-time deep linking
         const io = req.app.get('io');
         const sentRequest = requester.sentRequests.find(req => req._id.toString() === requestId);
         
