@@ -271,7 +271,8 @@ export const sendCashRequest = async (req, res) => {
         });
 
         // Return 200 OK even if notification failed.
-        return res.status(200).json({ success: true, message: "Request sent.", requestId: newRequest._id });
+        // 🔴 FIX: Removed 'message' field from successful response to prevent frontend global alert.
+        return res.status(200).json({ success: true, requestId: newRequest._id });
     } catch (error) {
         // Only catch database/logic errors here. Firebase errors are now handled above.
         console.error('Error in sendCashRequest (MongoDB/Logic):', error);
