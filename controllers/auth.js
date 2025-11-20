@@ -307,9 +307,13 @@ export const updateRequestStatus = async (req, res) => {
         const chatId = newChat._id.toString();
 
         // 2. Mark the request as 'accepted' for the acceptor
+        // 🟢 FIX 1: Convert chatId string back to ObjectId for correct Mongoose update
         await User.updateOne(
             { _id: acceptor._id, "incomingRequests._id": requestId },
-            { $set: { "incomingRequests.$.status": "accepted", "incomingRequests.$.chatId": chatId } }
+            { $set: { 
+                "incomingRequests.$.status": "accepted", 
+                "incomingRequests.$.chatId": new mongoose.Types.ObjectId(chatId) // 🔴 FIX: Cast to ObjectId
+            } }
         );
 
         // 3. Add the acceptor to the requester's list of acceptors for that sent request
@@ -350,6 +354,7 @@ export const updateRequestStatus = async (req, res) => {
                     requestInstructions: sentRequest.instructions || '',
                     requestType: sentRequest.type,
                     requesterId: requester._id.toString(),
+                    otherUserId: acceptor._id.toString(), // 🟢 NEW: Added otherUserId (Acceptor ID)
                 },
             };
             await admin.messaging().send(message);
@@ -371,6 +376,7 @@ export const updateRequestStatus = async (req, res) => {
                 requestInstructions: sentRequest.instructions || '',
                 requestType: sentRequest.type,
                 requesterId: requester._id.toString(),
+                otherUserId: acceptor._id.toString(), // 🟢 NEW: Added otherUserId
             });
             console.log(`Emitted real-time 'requestAccepted' event to requester's room: ${requester._id}`);
         }
@@ -439,7 +445,7 @@ export const getPendingRequestsCount = async (req, res) => {
 
 export const sendMessage = async (req, res) => {
     try {
-        const { chatId, senderId, text, isSystemMessage } = req.body; // 🟢 NEW: isSystemMessage 
+        const { chatId, senderId, text, isSystemMessage } = req.body;
         if (!mongoose.Types.ObjectId.isValid(chatId) || !mongoose.Types.ObjectId.isValid(senderId)) {
             return res.status(400).json({ success: false, message: "Invalid chat or sender ID." });
         }
@@ -449,28 +455,33 @@ export const sendMessage = async (req, res) => {
         const sender = await User.findById(senderId);
         if (!sender) return res.status(404).json({ success: false, message: "Sender not found." });
 
-        const newMessage = { senderId, text, isSystemMessage: isSystemMessage || false }; // 🟢 Store isSystemMessage
+        const newMessage = { senderId, text, isSystemMessage: isSystemMessage || false };
         chat.messages.push(newMessage);
         await chat.save();
         
-        const lastMessage = chat.messages[chat.messages.length - 1];
+        const lastMessage = chat.messages[chat.messages.length - 1]; // Get the saved sub-document
         
-        // 1. Identify the recipient
-        const recipientId = chat.participants.find(p => p.toString() !== senderId);
-        const recipient = await User.findById(recipientId);
+        // 1. Identify the recipient (ROBUST FIX)
+        const recipientIdString = chat.participants
+            .map(p => p.toString()) // Convert all ObjectIds to strings
+            .find(pId => pId !== senderId); // Find the one that doesn't match senderId
+            
+        // Use the string ID to find the recipient
+        const recipient = await User.findById(recipientIdString);
         
         // 2. Send Push Notification if it's not a system message
         if (recipient && recipient.pushNotificationToken && !isSystemMessage && admin.apps.length > 0) {
             const message = {
                 token: recipient.pushNotificationToken,
                 notification: {
+                    // 🟢 FIX: Use a robust sender name
                     title: `💬 New message from ${sender.name || sender.phoneNumber || 'User'}`,
                     body: text,
                 },
                 data: {
                     type: 'NEW_CHAT_MESSAGE',
-                    chatId: chatId,
-                    senderId: senderId,
+                    chatId: chatId.toString(),
+                    senderId: senderId.toString(),
                 },
             };
             // 🟢 Send the notification
@@ -479,15 +490,21 @@ export const sendMessage = async (req, res) => {
         }
 
 
-        // 3. SOCKET.IO EMIT FOR REAL-TIME MESSAGE DELIVERY
+        // 3. SOCKET.IO EMIT FOR REAL-TIME MESSAGE DELIVERY (ID FIX)
         const io = req.app.get('io');
+        
+        // Populate the message object correctly with _id and sender info for the frontend
         const populatedMessage = { 
-            ...lastMessage.toObject(), // Convert to object to spread properties
-            // 🟢 FIX: Use phoneNumber as fallback name
-            senderId: { _id: senderId, name: sender.name || sender.phoneNumber } 
+            ...lastMessage.toObject(), // Sub-document properties, including _id
+            _id: lastMessage._id.toString(), // Explicitly ensure _id is present and a string
+            senderId: { 
+                _id: senderId, 
+                // 🟢 FIX: Use robust sender name for frontend display
+                name: sender.name || sender.phoneNumber || 'User' 
+            } 
         };
         // 🟢 Emit to the chat room for real-time display
-        io.to(chatId).emit('newMessage', populatedMessage);
+        io.to(chatId.toString()).emit('newMessage', populatedMessage);
         
         return res.status(200).json({ success: true, message: "Message sent." });
     } catch (error) {
